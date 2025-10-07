@@ -846,6 +846,7 @@ elif step == "4️⃣ Sensitivity Analysis":
                         st.info("No sensitivity summary was returned by DoubleML.")
                                         
                 
+                    
                     # Visualization
                     st.markdown("---")
                     st.subheader("📈 Sensitivity Plots")
@@ -854,7 +855,14 @@ elif step == "4️⃣ Sensitivity Analysis":
                     
                     with tab1:
                         st.write("Shows how the point estimate changes with different levels of confounding")
-                        fig_theta = dml_plr.sensitivity_plot(value='theta')
+                        
+                        # Create a figure and axes for the plot
+                        fig_theta, ax_theta = plt.subplots()
+                        
+                        # Pass the axes to the plotting function
+                        dml_plr.sensitivity_plot(value='theta', ax=ax_theta)
+                        
+                        # Pass your own figure object to Streamlit
                         st.pyplot(fig_theta)
                         
                         st.caption("""
@@ -864,7 +872,14 @@ elif step == "4️⃣ Sensitivity Analysis":
                     
                     with tab2:
                         st.write(f"Shows how the {level*100:.0f}% confidence interval changes with different levels of confounding")
-                        fig_ci = dml_plr.sensitivity_plot(value='ci', level=level)
+                        
+                        # Create a separate figure and axes for the second plot
+                        fig_ci, ax_ci = plt.subplots()
+                        
+                        # Pass the axes to the plotting function
+                        dml_plr.sensitivity_plot(value='ci', level=level, ax=ax_ci)
+                        
+                        # Pass your own figure object to Streamlit
                         st.pyplot(fig_ci)
                         
                         st.caption("""
