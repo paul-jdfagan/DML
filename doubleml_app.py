@@ -123,7 +123,7 @@ if 'dml_plr' not in st.session_state:
     st.session_state.dml_plr = None
 
 # Title
-st.title("📊 Generic DoubleML Causal Analysis Tool")
+st.title("DoubleML Causal Analysis Tool")
 st.markdown("*Flexible time series causal inference for any domain*")
 st.markdown("---")
 
