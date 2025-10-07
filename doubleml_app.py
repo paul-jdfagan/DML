@@ -850,38 +850,49 @@ elif step == "4️⃣ Sensitivity Analysis":
                     # Visualization
                     st.markdown("---")
                     st.subheader("📈 Sensitivity Plots")
+                                    
+                tab1, tab2 = st.tabs(["Effect Bounds (θ)", "Confidence Interval Bounds"])
+                
+                with tab1:
+                    st.write("Shows how the point estimate changes with different levels of confounding")
                     
-                    tab1, tab2 = st.tabs(["Effect Bounds (θ)", "Confidence Interval Bounds"])
+                    # 1. Ensure any previous figures are closed (good practice for Streamlit)
+                    plt.close('all') 
                     
-                    with tab1:
-                        st.write("Shows how the point estimate changes with different levels of confounding")
-                        
-                        # 1. Clear any previous figure to ensure the new plot is isolated
-                        plt.close('all') 
+                    # 2. Let DoubleML draw the plot. It will create the figure internally.
+                    dml_plr.sensitivity_plot(value='theta') 
                     
-                        # 2. Call the plotting function. It will likely create and plot to a new current figure.
-                        dml_plr.sensitivity_plot(value='theta') 
-                        
-                        # 3. Explicitly get the Matplotlib figure object that was just created.
-                        # This should be a standard Matplotlib Figure object that Streamlit expects.
-                        fig_theta = plt.gcf()
-                        
-                        # 4. Pass the standard figure object to Streamlit
-                        st.pyplot(fig_theta)
-                        
-                        st.caption("""
-                        The plot shows the estimated causal effect across different values of confounding strength.
-                        The shaded region represents the sensitivity bounds.
-                        """)
+                    # 3. Get the figure object that was just drawn.
+                    fig_theta = plt.gcf()
                     
-                    # Apply the same logic to tab2 for fig_ci
-                    with tab2:
-                        # ...
-                        plt.close('all')
-                        dml_plr.sensitivity_plot(value='ci', level=level)
-                        fig_ci = plt.gcf()
-                        st.pyplot(fig_ci)
-                        # ...
+                    # 4. Pass the figure to Streamlit
+                    st.pyplot(fig_theta)
+                    
+                    # 5. (Optional but recommended) Close the figure after displaying
+                    plt.close(fig_theta) 
+                
+                    st.caption("The plot shows the estimated causal effect across different values of confounding strength. The shaded region represents the sensitivity bounds.")
+                
+                with tab2:
+                    st.write(f"Shows how the {level*100:.0f}% confidence interval changes with different levels of confounding")
+                    
+                    # 1. Ensure any previous figures are closed
+                    plt.close('all') 
+                    
+                    # 2. Let DoubleML draw the plot.
+                    dml_plr.sensitivity_plot(value='ci', level=level)
+                    
+                    # 3. Get the figure object that was just drawn.
+                    fig_ci = plt.gcf()
+                    
+                    # 4. Pass the figure to Streamlit
+                    st.pyplot(fig_ci)
+                    
+                    # 5. (Optional but recommended) Close the figure after displaying
+                    plt.close(fig_ci) 
+                
+                    st.caption("The plot shows the confidence interval bounds across different values of confounding strength. If the bounds cross zero, the effect becomes statistically insignificant.")
+                    
                     
                     # Benchmarking Results
                     if benchmark_vars:
