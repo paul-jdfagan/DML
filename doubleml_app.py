@@ -836,14 +836,7 @@ elif step == "4️⃣ Sensitivity Analysis":
                     
                     summary = getattr(dml_plr, "sensitivity_summary", None)
                     
-                    
-                    
-                    # Check if zero is in bounds
-                    if theta_lower < 0 < theta_upper:
-                        st.warning("⚠️ **Zero is within the sensitivity bounds**, suggesting the effect could be overturned by unobserved confounding of this magnitude.")
-                    else:
-                        st.success("✅ **Zero is not within the sensitivity bounds**, suggesting the effect is robust to this level of unobserved confounding.")
-                    
+                
                     # Visualization
                     st.markdown("---")
                     st.subheader("📈 Sensitivity Plots")
