@@ -833,7 +833,17 @@ elif step == "4️⃣ Sensitivity Analysis":
                     st.markdown("---")
                     st.subheader("📊 Sensitivity Summary")
                     
-                    st.dataframe(dml_plr.sensitivity_summary, use_container_width=True)
+                    summary = getattr(dml_plr, "sensitivity_summary", None)
+                    
+                    if isinstance(summary, pd.DataFrame):
+                        st.dataframe(summary, use_container_width=True)
+                    elif isinstance(summary, (dict, list)):
+                        st.dataframe(pd.DataFrame(summary), use_container_width=True)
+                    elif summary is not None:
+                        # It’s a string (pretty-printed report) — render as text, not a table
+                        st.markdown(f"```text\n{summary}\n```")
+                    else:
+                        st.info("No sensitivity summary was returned by DoubleML.")
                     
                     # Interpretation
                     st.subheader("📝 Interpretation")
