@@ -558,23 +558,30 @@ elif step == "3️⃣ Run Analysis":
                     cv_loss_l = root_mean_squared_error(y_outcome[mask], cv_preds_l[mask])
                     cv_loss_m = root_mean_squared_error(d_treatment[mask], cv_preds_m[mask])
                     
-                    # Prepare DoubleML
+                    # Prepare DoubleML (use real X for benchmarking)
                     y_for_doubleml = y_outcome.iloc[mask]
                     d_for_doubleml = d_treatment.iloc[mask]
                     
-                    df_for_doubleml = pd.concat([
-                        pd.Series(y_for_doubleml, name=config['outcome_col'], index=y_for_doubleml.index),
-                        pd.Series(d_for_doubleml, name=treatment_var_name, index=y_for_doubleml.index),
-                        pd.Series(np.zeros_like(y_for_doubleml), name="dummy_x", index=y_for_doubleml.index),
-                    ], axis=1)
+                    # Align X with mask
+                    X_for_doubleml = df_model.loc[y_for_doubleml.index, all_x]
                     
-                    dml_data = dml.DoubleMLData(
-                        df_for_doubleml, 
-                        y_col=config['outcome_col'], 
-                        d_cols=treatment_var_name, 
-                        x_cols=["dummy_x"]
+                    # Combine outcome, treatment, and confounders
+                    df_for_doubleml = pd.concat(
+                        [
+                            pd.Series(y_for_doubleml, name=config['outcome_col']),
+                            pd.Series(d_for_doubleml, name=treatment_var_name),
+                            X_for_doubleml,
+                        ],
+                        axis=1,
                     )
-                    
+
+                    # ✅ Create DoubleMLData with real X so sensitivity_benchmark can find them
+                    dml_data = dml.DoubleMLData(
+                        df_for_doubleml,
+                        y_col=config['outcome_col'],
+                        d_cols=treatment_var_name,
+                        x_cols=all_x,
+                    )
                     # Fit DoubleML
                     progress_bar.progress(90)
                     
@@ -602,7 +609,7 @@ elif step == "3️⃣ Run Analysis":
                     progress_bar.progress(100)
                     status_text.text("✅ Analysis complete!")
                     
-                    # Store results
+                    # ✅ Store for Step 4 benchmarking
                     st.session_state.results = {
                         'dml_plr': dml_plr,
                         'cv_loss_l': cv_loss_l,
@@ -611,6 +618,7 @@ elif step == "3️⃣ Run Analysis":
                         'mask_sum': mask.sum(),
                         'total_obs': len(df_model),
                         'confounder_cols': config['confounder_cols'],
+                        'x_cols_for_benchmark': all_x,  # ✅ store all X cols for Step 4
                         'treatment_var_name': treatment_var_name,
                         'best_estimator_l': automl_l.best_estimator,
                         'best_estimator_m': automl_m.best_estimator,
