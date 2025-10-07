@@ -928,7 +928,9 @@ elif step == "4️⃣ Sensitivity Analysis":
                     st.markdown("---")
                     st.subheader("📈 Sensitivity Plots")
                     tab1, tab2 = st.tabs(["Effect Bounds (θ)", "Confidence Interval Bounds"])
-                    
+
+                    st.caption(f"Treatment: `{treatment_names[0]}`")
+
                     with tab1:
                         st.write("Shows how the **point estimate** changes with different levels of confounding:")
                         plt.close('all')
