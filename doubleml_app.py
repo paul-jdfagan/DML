@@ -1,991 +1,976 @@
-{
- "cells": [
-  {
-   "cell_type": "code",
-   "execution_count": null,
-   "id": "bc6bcdcd-a992-458e-a7e7-503bde86f718",
-   "metadata": {},
-   "outputs": [],
-   "source": [
-    "import streamlit as st\n",
-    "import numpy as np\n",
-    "import pandas as pd\n",
-    "from sklearn.base import BaseEstimator, TransformerMixin\n",
-    "from sklearn.model_selection import TimeSeriesSplit\n",
-    "from sklearn.metrics import mean_squared_error\n",
-    "from flaml import AutoML\n",
-    "import doubleml as dml\n",
-    "import matplotlib.pyplot as plt\n",
-    "import logging\n",
-    "import time\n",
-    "\n",
-    "# Configure logging\n",
-    "logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')\n",
-    "logger = logging.getLogger(__name__)\n",
-    "\n",
-    "# Page config\n",
-    "st.set_page_config(page_title=\"DoubleML Causal Analysis\", layout=\"wide\", page_icon=\"📊\")\n",
-    "\n",
-    "# Custom RMSE function\n",
-    "def root_mean_squared_error(y_true, y_pred):\n",
-    "    return np.sqrt(mean_squared_error(y_true, y_pred))\n",
-    "\n",
-    "# Generic temporal transformer\n",
-    "class TemporalFeatures(BaseEstimator, TransformerMixin):\n",
-    "    \"\"\"Generic temporal feature engineering for time series data\"\"\"\n",
-    "    \n",
-    "    def __init__(self, date_col=\"Date\", include_cyclical=True, include_calendar=True, \n",
-    "                 include_trend=True, include_retail_events=False):\n",
-    "        self.date_col = date_col\n",
-    "        self.include_cyclical = include_cyclical\n",
-    "        self.include_calendar = include_calendar\n",
-    "        self.include_trend = include_trend\n",
-    "        self.include_retail_events = include_retail_events\n",
-    "\n",
-    "    def fit(self, X, y=None):\n",
-    "        return self\n",
-    "\n",
-    "    def transform(self, X):\n",
-    "        df = X.copy()\n",
-    "        df[self.date_col] = pd.to_datetime(df[self.date_col])\n",
-    "        df = df.sort_values(self.date_col).reset_index(drop=True)\n",
-    "        \n",
-    "        features_added = []\n",
-    "\n",
-    "        # Cyclical encodings\n",
-    "        if self.include_cyclical:\n",
-    "            df[\"month_sin\"] = np.sin(2*np.pi * df[self.date_col].dt.month/12)\n",
-    "            df[\"month_cos\"] = np.cos(2*np.pi * df[self.date_col].dt.month/12)\n",
-    "            df[\"dow_sin\"] = np.sin(2*np.pi * df[self.date_col].dt.weekday/7)\n",
-    "            df[\"dow_cos\"] = np.cos(2*np.pi * df[self.date_col].dt.weekday/7)\n",
-    "            df[\"doy_sin\"] = np.sin(2*np.pi * df[self.date_col].dt.dayofyear/365)\n",
-    "            df[\"doy_cos\"] = np.cos(2*np.pi * df[self.date_col].dt.dayofyear/365)\n",
-    "            features_added.extend([\"month_sin\", \"month_cos\", \"dow_sin\", \"dow_cos\", \"doy_sin\", \"doy_cos\"])\n",
-    "\n",
-    "        # Calendar flags\n",
-    "        if self.include_calendar:\n",
-    "            df[\"is_weekend\"] = (df[self.date_col].dt.weekday >= 5).astype(int)\n",
-    "            df[\"is_month_start\"] = (df[self.date_col].dt.day <= 7).astype(int)\n",
-    "            df[\"is_month_end\"] = (df[self.date_col].dt.day >= 24).astype(int)\n",
-    "            df[\"is_quarter_start\"] = df[self.date_col].dt.month.isin([1,4,7,10]).astype(int)\n",
-    "            df[\"is_quarter_end\"] = df[self.date_col].dt.month.isin([3,6,9,12]).astype(int)\n",
-    "            features_added.extend([\"is_weekend\", \"is_month_start\", \"is_month_end\", \n",
-    "                                 \"is_quarter_start\", \"is_quarter_end\"])\n",
-    "\n",
-    "        # Retail/shopping season flags (optional)\n",
-    "        if self.include_retail_events:\n",
-    "            df[\"is_holiday_season\"] = (\n",
-    "                (df[self.date_col].dt.month==12) |\n",
-    "                ((df[self.date_col].dt.month==11)&(df[self.date_col].dt.day>=15))\n",
-    "            ).astype(int)\n",
-    "            df[\"is_black_friday_week\"] = (\n",
-    "                (df[self.date_col].dt.month==11)&(df[self.date_col].dt.day>=20)\n",
-    "            ).astype(int)\n",
-    "            df[\"is_nordstrom_anniversary_sale\"] = (\n",
-    "                ((df[self.date_col].dt.month==7)&(df[self.date_col].dt.day>=15)) |\n",
-    "                ((df[self.date_col].dt.month==8)&(df[self.date_col].dt.day<=10))\n",
-    "            ).astype(int)\n",
-    "            df[\"is_sephora_spring_sale\"] = (\n",
-    "                (df[self.date_col].dt.month==4)&\n",
-    "                df[self.date_col].dt.day.between(1,20)\n",
-    "            ).astype(int)\n",
-    "            df[\"is_walmart_july_event\"] = (\n",
-    "                (df[self.date_col].dt.month==7)&\n",
-    "                df[self.date_col].dt.day.between(10,20)\n",
-    "            ).astype(int)\n",
-    "            df[\"is_target_july_event\"] = df[\"is_walmart_july_event\"]\n",
-    "            df[\"is_amazon_prime_days_window\"] = (\n",
-    "                (df[self.date_col].dt.month==7)&\n",
-    "                df[self.date_col].dt.day.between(9,18)\n",
-    "            ).astype(int)\n",
-    "            features_added.extend([\n",
-    "                \"is_holiday_season\", \"is_black_friday_week\", \"is_nordstrom_anniversary_sale\",\n",
-    "                \"is_sephora_spring_sale\", \"is_walmart_july_event\", \"is_target_july_event\",\n",
-    "                \"is_amazon_prime_days_window\"\n",
-    "            ])\n",
-    "\n",
-    "        # Trend features\n",
-    "        if self.include_trend:\n",
-    "            df[\"time_trend\"] = np.arange(len(df))\n",
-    "            df[\"time_trend_sq\"] = df[\"time_trend\"] ** 2\n",
-    "            features_added.extend([\"time_trend\", \"time_trend_sq\"])\n",
-    "\n",
-    "        return df.drop(columns=[self.date_col]), features_added\n",
-    "\n",
-    "def geometric_adstock(s, alpha=0.9, lags=7):\n",
-    "    \"\"\"Apply geometric adstock transformation\"\"\"\n",
-    "    w = alpha ** np.arange(lags)\n",
-    "    return s.rolling(lags, min_periods=1).apply(lambda x: np.dot(x[::-1], w[:len(x)]), raw=True)\n",
-    "\n",
-    "def apply_lag_features(df, col, lags=[1, 7, 14, 30]):\n",
-    "    \"\"\"Apply simple lag features\"\"\"\n",
-    "    for lag in lags:\n",
-    "        df[f\"{col}_lag{lag}\"] = df[col].shift(lag)\n",
-    "    return df\n",
-    "\n",
-    "# Initialize session state\n",
-    "if 'df' not in st.session_state:\n",
-    "    st.session_state.df = None\n",
-    "if 'results' not in st.session_state:\n",
-    "    st.session_state.results = None\n",
-    "if 'dml_plr' not in st.session_state:\n",
-    "    st.session_state.dml_plr = None\n",
-    "\n",
-    "# Title\n",
-    "st.title(\"📊 Generic DoubleML Causal Analysis Tool\")\n",
-    "st.markdown(\"*Flexible time series causal inference for any domain*\")\n",
-    "st.markdown(\"---\")\n",
-    "\n",
-    "# Sidebar\n",
-    "with st.sidebar:\n",
-    "    st.header(\"Navigation\")\n",
-    "    step = st.radio(\n",
-    "        \"Select Step:\",\n",
-    "        [\"1️⃣ Upload Data\", \"2️⃣ Configure Analysis\", \"3️⃣ Run Analysis\", \"4️⃣ Sensitivity Analysis\"],\n",
-    "        key=\"nav_step\"\n",
-    "    )\n",
-    "    st.markdown(\"---\")\n",
-    "    st.info(\"💡 **Tip**: Follow the steps in order for best results.\")\n",
-    "    \n",
-    "    with st.expander(\"ℹ️ About This Tool\"):\n",
-    "        st.markdown(\"\"\"\n",
-    "        This tool implements **Double Machine Learning (DoubleML)** for causal inference on time series data.\n",
-    "        \n",
-    "        **Use cases:**\n",
-    "        - Marketing: Ad spend → Sales\n",
-    "        - Healthcare: Treatment → Outcomes\n",
-    "        - Policy: Intervention → Impact\n",
-    "        - Finance: Events → Returns\n",
-    "        - Operations: Changes → Metrics\n",
-    "        \"\"\")\n",
-    "\n",
-    "# Step 1: Upload Data\n",
-    "if step == \"1️⃣ Upload Data\":\n",
-    "    st.header(\"Step 1: Upload Your Dataset\")\n",
-    "    \n",
-    "    col1, col2 = st.columns([2, 1])\n",
-    "    \n",
-    "    with col1:\n",
-    "        uploaded_file = st.file_uploader(\"Choose a CSV file\", type=\"csv\")\n",
-    "    \n",
-    "    with col2:\n",
-    "        st.info(\"**Requirements:**\\n- Time series data\\n- Date column\\n- Outcome variable\\n- Treatment variable\")\n",
-    "    \n",
-    "    if uploaded_file is not None:\n",
-    "        df = pd.read_csv(uploaded_file)\n",
-    "        st.session_state.df = df\n",
-    "        \n",
-    "        st.success(f\"✅ Dataset uploaded successfully! {len(df)} rows × {len(df.columns)} columns\")\n",
-    "        \n",
-    "        tab1, tab2, tab3 = st.tabs([\"📊 Preview\", \"📈 Summary Stats\", \"🔍 Data Quality\"])\n",
-    "        \n",
-    "        with tab1:\n",
-    "            st.dataframe(df.head(20), use_container_width=True)\n",
-    "        \n",
-    "        with tab2:\n",
-    "            col1, col2 = st.columns(2)\n",
-    "            with col1:\n",
-    "                st.write(\"**Numeric Columns:**\")\n",
-    "                st.dataframe(df.describe())\n",
-    "            with col2:\n",
-    "                st.write(\"**Data Types:**\")\n",
-    "                st.dataframe(pd.DataFrame(df.dtypes, columns=['Data Type']))\n",
-    "        \n",
-    "        with tab3:\n",
-    "            missing = df.isnull().sum()\n",
-    "            if missing.sum() > 0:\n",
-    "                st.warning(f\"⚠️ Missing values detected in {(missing > 0).sum()} columns:\")\n",
-    "                missing_df = pd.DataFrame({\n",
-    "                    'Column': missing[missing > 0].index,\n",
-    "                    'Missing Count': missing[missing > 0].values,\n",
-    "                    'Missing %': (missing[missing > 0].values / len(df) * 100).round(2)\n",
-    "                })\n",
-    "                st.dataframe(missing_df)\n",
-    "            else:\n",
-    "                st.success(\"✅ No missing values detected\")\n",
-    "            \n",
-    "            # Check for potential date columns\n",
-    "            potential_dates = [col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()]\n",
-    "            if potential_dates:\n",
-    "                st.info(f\"🗓️ Potential date columns detected: {', '.join(potential_dates)}\")\n",
-    "        \n",
-    "    else:\n",
-    "        st.info(\"👆 Please upload a CSV file to begin\")\n",
-    "\n",
-    "# Step 2: Configure Analysis\n",
-    "elif step == \"2️⃣ Configure Analysis\":\n",
-    "    st.header(\"Step 2: Configure Your Analysis\")\n",
-    "    \n",
-    "    if st.session_state.df is None:\n",
-    "        st.warning(\"⚠️ Please upload data first (Step 1)\")\n",
-    "    else:\n",
-    "        df = st.session_state.df\n",
-    "        \n",
-    "        # Core Variables Section\n",
-    "        st.subheader(\"🎯 Core Variables\")\n",
-    "        col1, col2, col3 = st.columns(3)\n",
-    "        \n",
-    "        with col1:\n",
-    "            date_col = st.selectbox(\"📅 Date Column\", df.columns.tolist(), key=\"date_col\")\n",
-    "        \n",
-    "        with col2:\n",
-    "            outcome_col = st.selectbox(\"📊 Outcome Variable (Y)\", \n",
-    "                                      [col for col in df.columns if col != date_col], \n",
-    "                                      key=\"outcome_col\")\n",
-    "        \n",
-    "        with col3:\n",
-    "            treatment_col = st.selectbox(\"💉 Treatment Variable (D)\", \n",
-    "                                        [col for col in df.columns if col not in [date_col, outcome_col]], \n",
-    "                                        key=\"treatment_col\")\n",
-    "        \n",
-    "        # Confounders Section\n",
-    "        st.markdown(\"---\")\n",
-    "        st.subheader(\"🔧 Confounding Variables\")\n",
-    "        \n",
-    "        available_cols = [col for col in df.columns if col not in [date_col, outcome_col, treatment_col]]\n",
-    "        confounder_cols = st.multiselect(\n",
-    "            \"Select confounding variables (X) - variables that affect both treatment and outcome\",\n",
-    "            available_cols,\n",
-    "            help=\"These are the observed covariates that may confound the causal relationship\",\n",
-    "            key=\"confounder_cols\"\n",
-    "        )\n",
-    "        \n",
-    "        # Treatment Transformation Section\n",
-    "        st.markdown(\"---\")\n",
-    "        st.subheader(\"🔄 Treatment Transformation (Optional)\")\n",
-    "        \n",
-    "        col1, col2 = st.columns([1, 2])\n",
-    "        \n",
-    "        with col1:\n",
-    "            treatment_transform = st.selectbox(\n",
-    "                \"Transform treatment variable?\",\n",
-    "                [\"None\", \"Adstock (Geometric Decay)\", \"Simple Lags\"],\n",
-    "                help=\"Apply transformations to capture delayed/cumulative effects\"\n",
-    "            )\n",
-    "        \n",
-    "        with col2:\n",
-    "            if treatment_transform == \"Adstock (Geometric Decay)\":\n",
-    "                st.info(\"**Adstock** models carryover effects (common in marketing/advertising)\")\n",
-    "                col2a, col2b = st.columns(2)\n",
-    "                with col2a:\n",
-    "                    alpha = st.slider(\"Decay Rate (α)\", 0.0, 1.0, 0.9, 0.05, \n",
-    "                                     help=\"How quickly effects decay (higher = slower decay)\")\n",
-    "                with col2b:\n",
-    "                    lags = st.slider(\"Number of Lags\", 1, 30, 7,\n",
-    "                                    help=\"How many periods to look back\")\n",
-    "            elif treatment_transform == \"Simple Lags\":\n",
-    "                st.info(\"**Simple Lags** use past values as features\")\n",
-    "                lag_periods = st.multiselect(\"Lag periods\", [1, 7, 14, 30, 60, 90], default=[1, 7])\n",
-    "        \n",
-    "        # Feature Engineering Section\n",
-    "        st.markdown(\"---\")\n",
-    "        st.subheader(\"🛠️ Feature Engineering\")\n",
-    "        \n",
-    "        st.write(\"Select which temporal features to automatically generate:\")\n",
-    "        \n",
-    "        col1, col2, col3, col4 = st.columns(4)\n",
-    "        \n",
-    "        with col1:\n",
-    "            include_cyclical = st.checkbox(\"📈 Cyclical Features\", value=True,\n",
-    "                                          help=\"Sin/cos encodings for month, day of week, day of year\")\n",
-    "        \n",
-    "        with col2:\n",
-    "            include_calendar = st.checkbox(\"📅 Calendar Features\", value=True,\n",
-    "                                          help=\"Weekend, month start/end, quarter flags\")\n",
-    "        \n",
-    "        with col3:\n",
-    "            include_trend = st.checkbox(\"📉 Trend Features\", value=True,\n",
-    "                                       help=\"Linear and quadratic time trends\")\n",
-    "        \n",
-    "        with col4:\n",
-    "            include_retail = st.checkbox(\"🛍️ Retail Events\", value=False,\n",
-    "                                        help=\"Holiday season, Black Friday, Prime Day, etc.\")\n",
-    "        \n",
-    "        # Model Configuration Section\n",
-    "        st.markdown(\"---\")\n",
-    "        st.subheader(\"⚙️ Model Configuration\")\n",
-    "        \n",
-    "        col1, col2, col3 = st.columns(3)\n",
-    "        \n",
-    "        with col1:\n",
-    "            n_folds = st.slider(\"CV Folds\", 2, 10, 5, \n",
-    "                               help=\"Number of time series cross-validation folds\")\n",
-    "        \n",
-    "        with col2:\n",
-    "            time_budget = st.slider(\"FLAML Time Budget (s)\", 30, 600, 120, 30,\n",
-    "                                   help=\"Time budget per model (outcome & treatment)\")\n",
-    "        \n",
-    "        with col3:\n",
-    "            estimators = st.multiselect(\n",
-    "                \"ML Estimators\",\n",
-    "                [\"lgbm\", \"xgboost\", \"histgb\", \"xgb_limitdepth\", \"catboost\", \"rf\", \"extra_tree\"],\n",
-    "                default=[\"lgbm\", \"xgboost\", \"histgb\"],\n",
-    "                help=\"Machine learning algorithms to try\"\n",
-    "            )\n",
-    "        \n",
-    "        # Advanced Options\n",
-    "        with st.expander(\"🔬 Advanced Options\"):\n",
-    "            col1, col2 = st.columns(2)\n",
-    "            \n",
-    "            with col1:\n",
-    "                score_type = st.selectbox(\n",
-    "                    \"DML Score Type\",\n",
-    "                    [\"partialling out\", \"IV-type\"],\n",
-    "                    help=\"Orthogonalization approach for DML\"\n",
-    "                )\n",
-    "                \n",
-    "                n_rep = st.slider(\"Number of Repetitions\", 1, 10, 1,\n",
-    "                                 help=\"Repeated sample splitting for stability\")\n",
-    "            \n",
-    "            with col2:\n",
-    "                dml_procedure = st.selectbox(\n",
-    "                    \"DML Procedure\",\n",
-    "                    [\"dml1\", \"dml2\"],\n",
-    "                    index=1,\n",
-    "                    help=\"DML1: no cross-fitting, DML2: with cross-fitting\"\n",
-    "                )\n",
-    "                \n",
-    "                trim_threshold = st.slider(\"Propensity Score Trimming\", 0.0, 0.2, 0.01, 0.01,\n",
-    "                                          help=\"Trim extreme propensity scores (0 = no trimming)\")\n",
-    "        \n",
-    "        # Save Configuration\n",
-    "        st.markdown(\"---\")\n",
-    "        if st.button(\"✅ Confirm Configuration\", type=\"primary\", use_container_width=True):\n",
-    "            \n",
-    "            # Validate configuration\n",
-    "            if not confounder_cols:\n",
-    "                st.warning(\"⚠️ Consider adding confounding variables for more robust estimates\")\n",
-    "            \n",
-    "            config = {\n",
-    "                'date_col': date_col,\n",
-    "                'outcome_col': outcome_col,\n",
-    "                'treatment_col': treatment_col,\n",
-    "                'confounder_cols': confounder_cols,\n",
-    "                'treatment_transform': treatment_transform,\n",
-    "                'n_folds': n_folds,\n",
-    "                'time_budget': time_budget,\n",
-    "                'estimators': estimators,\n",
-    "                'include_cyclical': include_cyclical,\n",
-    "                'include_calendar': include_calendar,\n",
-    "                'include_trend': include_trend,\n",
-    "                'include_retail': include_retail,\n",
-    "                'score_type': score_type,\n",
-    "                'n_rep': n_rep,\n",
-    "                'dml_procedure': dml_procedure,\n",
-    "                'trim_threshold': trim_threshold\n",
-    "            }\n",
-    "            \n",
-    "            # Add transformation-specific params\n",
-    "            if treatment_transform == \"Adstock (Geometric Decay)\":\n",
-    "                config['alpha'] = alpha\n",
-    "                config['lags'] = lags\n",
-    "            elif treatment_transform == \"Simple Lags\":\n",
-    "                config['lag_periods'] = lag_periods\n",
-    "            \n",
-    "            st.session_state.variable_config = config\n",
-    "            \n",
-    "            # Show configuration summary\n",
-    "            st.success(\"✅ Configuration saved! Here's your setup:\")\n",
-    "            \n",
-    "            summary_col1, summary_col2 = st.columns(2)\n",
-    "            \n",
-    "            with summary_col1:\n",
-    "                st.write(\"**Variables:**\")\n",
-    "                st.write(f\"- Outcome: `{outcome_col}`\")\n",
-    "                st.write(f\"- Treatment: `{treatment_col}`\")\n",
-    "                st.write(f\"- Confounders: {len(confounder_cols)}\")\n",
-    "            \n",
-    "            with summary_col2:\n",
-    "                st.write(\"**Configuration:**\")\n",
-    "                st.write(f\"- Transform: {treatment_transform}\")\n",
-    "                st.write(f\"- CV Folds: {n_folds}\")\n",
-    "                st.write(f\"- Time Budget: {time_budget}s\")\n",
-    "            \n",
-    "            st.info(\"👉 Proceed to Step 3 to run the analysis\")\n",
-    "\n",
-    "# Step 3: Run Analysis\n",
-    "elif step == \"3️⃣ Run Analysis\":\n",
-    "    st.header(\"Step 3: Run Causal Analysis\")\n",
-    "    \n",
-    "    if st.session_state.df is None:\n",
-    "        st.warning(\"⚠️ Please upload data first (Step 1)\")\n",
-    "    elif 'variable_config' not in st.session_state:\n",
-    "        st.warning(\"⚠️ Please configure your analysis first (Step 2)\")\n",
-    "    else:\n",
-    "        config = st.session_state.variable_config\n",
-    "        \n",
-    "        # Configuration Summary\n",
-    "        st.subheader(\"📋 Configuration Summary\")\n",
-    "        \n",
-    "        col1, col2, col3, col4 = st.columns(4)\n",
-    "        \n",
-    "        with col1:\n",
-    "            st.metric(\"Outcome\", config['outcome_col'])\n",
-    "            st.metric(\"Treatment\", config['treatment_col'])\n",
-    "        \n",
-    "        with col2:\n",
-    "            st.metric(\"Confounders\", len(config['confounder_cols']))\n",
-    "            st.metric(\"Transform\", config['treatment_transform'].split()[0])\n",
-    "        \n",
-    "        with col3:\n",
-    "            st.metric(\"CV Folds\", config['n_folds'])\n",
-    "            st.metric(\"Estimators\", len(config['estimators']))\n",
-    "        \n",
-    "        with col4:\n",
-    "            st.metric(\"Time Budget\", f\"{config['time_budget']}s\")\n",
-    "            st.metric(\"DML Score\", config['score_type'].split()[0])\n",
-    "        \n",
-    "        st.markdown(\"---\")\n",
-    "        \n",
-    "        if st.button(\"🚀 Run Analysis\", type=\"primary\", use_container_width=True):\n",
-    "            with st.spinner(\"Running analysis... This may take several minutes.\"):\n",
-    "                try:\n",
-    "                    # Progress tracking\n",
-    "                    progress_bar = st.progress(0)\n",
-    "                    status_text = st.empty()\n",
-    "                    \n",
-    "                    # Step 1: Load and preprocess\n",
-    "                    status_text.text(\"Step 1/7: Loading and preprocessing data...\")\n",
-    "                    progress_bar.progress(5)\n",
-    "                    \n",
-    "                    df = st.session_state.df.copy()\n",
-    "                    \n",
-    "                    # Handle missing values in treatment\n",
-    "                    if df[config['treatment_col']].isnull().any():\n",
-    "                        df[config['treatment_col']].fillna(method='ffill', inplace=True)\n",
-    "                    \n",
-    "                    # Step 2: Apply treatment transformation\n",
-    "                    status_text.text(\"Step 2/7: Applying treatment transformation...\")\n",
-    "                    progress_bar.progress(15)\n",
-    "                    \n",
-    "                    treatment_var_name = config['treatment_col']\n",
-    "                    \n",
-    "                    if config['treatment_transform'] == \"Adstock (Geometric Decay)\":\n",
-    "                        df[\"transformed_treatment\"] = geometric_adstock(\n",
-    "                            df[config['treatment_col']], \n",
-    "                            alpha=config['alpha'], \n",
-    "                            lags=config['lags']\n",
-    "                        )\n",
-    "                        treatment_var_name = \"transformed_treatment\"\n",
-    "                    elif config['treatment_transform'] == \"Simple Lags\":\n",
-    "                        df = apply_lag_features(df, config['treatment_col'], config['lag_periods'])\n",
-    "                        # Keep original as primary, but lags will be in confounders\n",
-    "                        treatment_var_name = config['treatment_col']\n",
-    "                    else:\n",
-    "                        df[\"transformed_treatment\"] = df[config['treatment_col']]\n",
-    "                        treatment_var_name = \"transformed_treatment\"\n",
-    "                    \n",
-    "                    # Drop rows with missing outcome or treatment\n",
-    "                    df.dropna(subset=[config['outcome_col'], treatment_var_name], inplace=True)\n",
-    "                    df.reset_index(drop=True, inplace=True)\n",
-    "                    \n",
-    "                    # Step 3: Feature engineering\n",
-    "                    status_text.text(\"Step 3/7: Engineering temporal features...\")\n",
-    "                    progress_bar.progress(25)\n",
-    "                    \n",
-    "                    transformer = TemporalFeatures(\n",
-    "                        date_col=config['date_col'],\n",
-    "                        include_cyclical=config['include_cyclical'],\n",
-    "                        include_calendar=config['include_calendar'],\n",
-    "                        include_trend=config['include_trend'],\n",
-    "                        include_retail_events=config['include_retail']\n",
-    "                    )\n",
-    "                    \n",
-    "                    df_temp, temp_feats = transformer.fit_transform(df)\n",
-    "                    \n",
-    "                    # Combine all features\n",
-    "                    all_x = config['confounder_cols'] + temp_feats\n",
-    "                    \n",
-    "                    # Build model dataframe\n",
-    "                    df_model = pd.concat([\n",
-    "                        df_temp[temp_feats],\n",
-    "                        df[config['confounder_cols']],\n",
-    "                        df[[config['outcome_col'], treatment_var_name]]\n",
-    "                    ], axis=1).loc[:, lambda d: ~d.columns.duplicated()]\n",
-    "                    \n",
-    "                    # Drop any remaining NaNs\n",
-    "                    df_model.dropna(inplace=True)\n",
-    "                    \n",
-    "                    st.info(f\"📊 Analysis dataset: {len(df_model)} observations, {len(all_x)} features\")\n",
-    "                    \n",
-    "                    # Step 4: Set up cross-validation\n",
-    "                    status_text.text(\"Step 4/7: Setting up time series cross-validation...\")\n",
-    "                    progress_bar.progress(35)\n",
-    "                    \n",
-    "                    my_splitter = TimeSeriesSplit(n_splits=config['n_folds'])\n",
-    "                    \n",
-    "                    X_all = df_model[all_x]\n",
-    "                    y_outcome = df_model[config['outcome_col']]\n",
-    "                    d_treatment = df_model[treatment_var_name]\n",
-    "                    \n",
-    "                    # Step 5: Fit outcome model\n",
-    "                    status_text.text(\"Step 5/7: Fitting outcome model (ml_l)...\")\n",
-    "                    progress_bar.progress(45)\n",
-    "                    \n",
-    "                    automl_l = AutoML()\n",
-    "                    automl_l.fit(\n",
-    "                        X_train=X_all, y_train=y_outcome,\n",
-    "                        task=\"regression\", metric=\"rmse\", \n",
-    "                        time_budget=config['time_budget'],\n",
-    "                        split_type=my_splitter, \n",
-    "                        estimator_list=config['estimators'],\n",
-    "                        verbose=0\n",
-    "                    )\n",
-    "                    \n",
-    "                    # Step 6: Fit treatment model\n",
-    "                    status_text.text(\"Step 6/7: Fitting treatment model (ml_m)...\")\n",
-    "                    progress_bar.progress(60)\n",
-    "                    \n",
-    "                    automl_m = AutoML()\n",
-    "                    automl_m.fit(\n",
-    "                        X_train=X_all, y_train=d_treatment,\n",
-    "                        task=\"regression\", metric=\"rmse\", \n",
-    "                        time_budget=config['time_budget'],\n",
-    "                        split_type=my_splitter, \n",
-    "                        estimator_list=config['estimators'],\n",
-    "                        verbose=0\n",
-    "                    )\n",
-    "                    \n",
-    "                    # Step 7: Generate CV predictions\n",
-    "                    status_text.text(\"Step 7/7: Generating cross-validated predictions and computing causal effect...\")\n",
-    "                    progress_bar.progress(75)\n",
-    "                    \n",
-    "                    cv_preds_l = np.full_like(y_outcome, fill_value=np.nan, dtype=float)\n",
-    "                    cv_preds_m = np.full_like(d_treatment, fill_value=np.nan, dtype=float)\n",
-    "                    \n",
-    "                    best_estimator_l = automl_l.model.estimator\n",
-    "                    best_estimator_m = automl_m.model.estimator\n",
-    "                    \n",
-    "                    for fold_idx, (train_idx, test_idx) in enumerate(my_splitter.split(X_all)):\n",
-    "                        best_estimator_l.fit(X_all.iloc[train_idx], y_outcome.iloc[train_idx])\n",
-    "                        cv_preds_l[test_idx] = best_estimator_l.predict(X_all.iloc[test_idx])\n",
-    "                        best_estimator_m.fit(X_all.iloc[train_idx], d_treatment.iloc[train_idx])\n",
-    "                        cv_preds_m[test_idx] = best_estimator_m.predict(X_all.iloc[test_idx])\n",
-    "                    \n",
-    "                    mask = ~np.isnan(cv_preds_l)\n",
-    "                    \n",
-    "                    cv_loss_l = root_mean_squared_error(y_outcome[mask], cv_preds_l[mask])\n",
-    "                    cv_loss_m = root_mean_squared_error(d_treatment[mask], cv_preds_m[mask])\n",
-    "                    \n",
-    "                    # Prepare DoubleML\n",
-    "                    y_for_doubleml = y_outcome.iloc[mask]\n",
-    "                    d_for_doubleml = d_treatment.iloc[mask]\n",
-    "                    \n",
-    "                    df_for_doubleml = pd.concat([\n",
-    "                        pd.Series(y_for_doubleml, name=config['outcome_col'], index=y_for_doubleml.index),\n",
-    "                        pd.Series(d_for_doubleml, name=treatment_var_name, index=y_for_doubleml.index),\n",
-    "                        pd.Series(np.zeros_like(y_for_doubleml), name=\"dummy_x\", index=y_for_doubleml.index),\n",
-    "                    ], axis=1)\n",
-    "                    \n",
-    "                    dml_data = dml.DoubleMLData(\n",
-    "                        df_for_doubleml, \n",
-    "                        y_col=config['outcome_col'], \n",
-    "                        d_cols=treatment_var_name, \n",
-    "                        x_cols=[\"dummy_x\"]\n",
-    "                    )\n",
-    "                    \n",
-    "                    # Fit DoubleML\n",
-    "                    progress_bar.progress(90)\n",
-    "                    \n",
-    "                    ml_l_dummy = dml.utils.DMLDummyRegressor()\n",
-    "                    ml_m_dummy = dml.utils.DMLDummyRegressor()\n",
-    "                    \n",
-    "                    pred_dict = {\n",
-    "                        treatment_var_name: {\n",
-    "                            \"ml_l\": cv_preds_l[mask].reshape(-1, 1),\n",
-    "                            \"ml_m\": cv_preds_m[mask].reshape(-1, 1),\n",
-    "                        }\n",
-    "                    }\n",
-    "                    \n",
-    "                    dml_plr = dml.DoubleMLPLR(\n",
-    "                        dml_data,\n",
-    "                        ml_l=ml_l_dummy,\n",
-    "                        ml_m=ml_m_dummy,\n",
-    "                        n_folds=config['n_folds'],\n",
-    "                        n_rep=config['n_rep'],\n",
-    "                        score=config['score_type']\n",
-    "                    )\n",
-    "                    \n",
-    "                    dml_plr.fit(external_predictions=pred_dict)\n",
-    "                    \n",
-    "                    progress_bar.progress(100)\n",
-    "                    status_text.text(\"✅ Analysis complete!\")\n",
-    "                    \n",
-    "                    # Store results\n",
-    "                    st.session_state.results = {\n",
-    "                        'dml_plr': dml_plr,\n",
-    "                        'cv_loss_l': cv_loss_l,\n",
-    "                        'cv_loss_m': cv_loss_m,\n",
-    "                        'n_obs': dml_data.n_obs,\n",
-    "                        'mask_sum': mask.sum(),\n",
-    "                        'total_obs': len(df_model),\n",
-    "                        'confounder_cols': config['confounder_cols'],\n",
-    "                        'treatment_var_name': treatment_var_name,\n",
-    "                        'best_estimator_l': automl_l.best_estimator,\n",
-    "                        'best_estimator_m': automl_m.best_estimator,\n",
-    "                        'temporal_features': temp_feats\n",
-    "                    }\n",
-    "                    st.session_state.dml_plr = dml_plr\n",
-    "                    \n",
-    "                    time.sleep(0.5)\n",
-    "                    progress_bar.empty()\n",
-    "                    status_text.empty()\n",
-    "                    \n",
-    "                    st.success(\"✅ Analysis completed successfully!\")\n",
-    "                    \n",
-    "                    # Display Results\n",
-    "                    st.markdown(\"---\")\n",
-    "                    st.header(\"📊 Causal Effect Estimates\")\n",
-    "                    \n",
-    "                    # Main metrics\n",
-    "                    col1, col2, col3 = st.columns(3)\n",
-    "                    \n",
-    "                    with col1:\n",
-    "                        st.metric(\"Causal Effect (θ)\", f\"{dml_plr.coef[0]:.6f}\",\n",
-    "                                 help=\"Average treatment effect on the outcome\")\n",
-    "                        st.metric(\"Standard Error\", f\"{dml_plr.se[0]:.6f}\")\n",
-    "                    \n",
-    "                    with col2:\n",
-    "                        ci_lower = dml_plr.confint().iloc[0, 0]\n",
-    "                        ci_upper = dml_plr.confint().iloc[0, 1]\n",
-    "                        st.metric(\"95% CI Lower\", f\"{ci_lower:.6f}\")\n",
-    "                        st.metric(\"95% CI Upper\", f\"{ci_upper:.6f}\")\n",
-    "                    \n",
-    "                    with col3:\n",
-    "                        p_val = dml_plr.pval[0]\n",
-    "                        st.metric(\"P-value\", f\"{p_val:.6f}\")\n",
-    "                        if p_val < 0.05:\n",
-    "                            st.success(\"✅ Statistically significant (p < 0.05)\")\n",
-    "                        else:\n",
-    "                            st.warning(\"⚠️ Not statistically significant (p ≥ 0.05)\")\n",
-    "                    \n",
-    "                    # Interpretation\n",
-    "                    st.subheader(\"📝 Interpretation\")\n",
-    "                    effect = dml_plr.coef[0]\n",
-    "                    if effect > 0:\n",
-    "                        st.info(f\"📈 A one-unit increase in **{config['treatment_col']}** is associated with a **{effect:.4f}** unit increase in **{config['outcome_col']}** (on average, all else equal).\")\n",
-    "                    else:\n",
-    "                        st.info(f\"📉 A one-unit increase in **{config['treatment_col']}** is associated with a **{abs(effect):.4f}** unit decrease in **{config['outcome_col']}** (on average, all else equal).\")\n",
-    "                    \n",
-    "                    # Summary table\n",
-    "                    st.subheader(\"📋 Detailed Summary\")\n",
-    "                    summary_df = dml_plr.summary\n",
-    "                    st.dataframe(summary_df, use_container_width=True)\n",
-    "                    \n",
-    "                    # Model Performance\n",
-    "                    st.markdown(\"---\")\n",
-    "                    st.subheader(\"🎯 Nuisance Model Performance\")\n",
-    "                    \n",
-    "                    perf_col1, perf_col2, perf_col3 = st.columns(3)\n",
-    "                    \n",
-    "                    with perf_col1:\n",
-    "                        st.metric(\"Outcome Model RMSE\", f\"{cv_loss_l:.4f}\",\n",
-    "                                 help=\"Lower is better - measures prediction accuracy for outcome\")\n",
-    "                    \n",
-    "                    with perf_col2:\n",
-    "                        st.metric(\"Treatment Model RMSE\", f\"{cv_loss_m:.4f}\",\n",
-    "                                 help=\"Lower is better - measures prediction accuracy for treatment\")\n",
-    "                    \n",
-    "                    with perf_col3:\n",
-    "                        st.metric(\"Best Outcome Estimator\", automl_l.best_estimator)\n",
-    "                        st.metric(\"Best Treatment Estimator\", automl_m.best_estimator)\n",
-    "                    \n",
-    "                    # Data Processing Details\n",
-    "                    with st.expander(\"📈 Data Processing Details\"):\n",
-    "                        st.write(f\"**Original observations:** {len(df_model)}\")\n",
-    "                        st.write(f\"**Valid CV predictions:** {mask.sum()} ({100*mask.sum()/len(df_model):.1f}%)\")\n",
-    "                        st.write(f\"**Used for DoubleML:** {dml_data.n_obs}\")\n",
-    "                        st.write(f\"**Time series folds:** {config['n_folds']}\")\n",
-    "                        st.write(f\"**Total features used:** {len(all_x)}\")\n",
-    "                        st.write(f\"**Temporal features added:** {len(temp_feats)}\")\n",
-    "                        \n",
-    "                        if config['treatment_transform'] != \"None\":\n",
-    "                            st.write(f\"**Treatment transformation:** {config['treatment_transform']}\")\n",
-    "                    \n",
-    "                    # Feature Importance (if available)\n",
-    "                    with st.expander(\"🔍 Feature Information\"):\n",
-    "                        st.write(\"**Confounding Variables:**\")\n",
-    "                        st.write(\", \".join(config['confounder_cols']) if config['confounder_cols'] else \"None\")\n",
-    "                        \n",
-    "                        st.write(\"\\n**Temporal Features Added:**\")\n",
-    "                        st.write(\", \".join(temp_feats))\n",
-    "                    \n",
-    "                    st.markdown(\"---\")\n",
-    "                    st.info(\"👉 Proceed to Step 4 for sensitivity analysis to test robustness to unobserved confounding\")\n",
-    "                    \n",
-    "                except Exception as e:\n",
-    "                    st.error(f\"❌ Error during analysis: {str(e)}\")\n",
-    "                    st.exception(e)\n",
-    "                    progress_bar.empty()\n",
-    "                    status_text.empty()\n",
-    "\n",
-    "# Step 4: Sensitivity Analysis\n",
-    "elif step == \"4️⃣ Sensitivity Analysis\":\n",
-    "    st.header(\"Step 4: Sensitivity Analysis\")\n",
-    "    \n",
-    "    if st.session_state.results is None:\n",
-    "        st.warning(\"⚠️ Please run the analysis first (Step 3)\")\n",
-    "    else:\n",
-    "        dml_plr = st.session_state.results['dml_plr']\n",
-    "        \n",
-    "        st.info(\"\"\"\n",
-    "        📊 **Sensitivity Analysis** assesses how robust your causal estimates are to potential **unobserved confounding**.\n",
-    "        \n",
-    "        Even after controlling for observed confounders, there may be unmeasured variables that affect both treatment and outcome.\n",
-    "        This analysis shows how strong such confounding would need to be to change your conclusions.\n",
-    "        \"\"\")\n",
-    "        \n",
-    "        # Sensitivity Parameters\n",
-    "        st.subheader(\"🎛️ Sensitivity Parameters\")\n",
-    "        \n",
-    "        col1, col2 = st.columns(2)\n",
-    "        \n",
-    "        with col1:\n",
-    "            cf_y = st.number_input(\n",
-    "                \"Partial R² with outcome (cf_y)\",\n",
-    "                min_value=0.0,\n",
-    "                max_value=1.0,\n",
-    "                value=0.05,\n",
-    "                step=0.01,\n",
-    "                format=\"%.4f\",\n",
-    "                help=\"Strength of association between unobserved confounder and outcome (0-1)\"\n",
-    "            )\n",
-    "            \n",
-    "            st.caption(\"💡 Represents how much of the outcome variance the unobserved confounder explains\")\n",
-    "        \n",
-    "        with col2:\n",
-    "            cf_d = st.number_input(\n",
-    "                \"Partial R² with treatment (cf_d)\",\n",
-    "                min_value=0.0,\n",
-    "                max_value=1.0,\n",
-    "                value=0.05,\n",
-    "                step=0.01,\n",
-    "                format=\"%.4f\",\n",
-    "                help=\"Strength of association between unobserved confounder and treatment (0-1)\"\n",
-    "            )\n",
-    "            \n",
-    "            st.caption(\"💡 Represents how much of the treatment variance the unobserved confounder explains\")\n",
-    "        \n",
-    "        col3, col4 = st.columns(2)\n",
-    "        \n",
-    "        with col3:\n",
-    "            rho = st.slider(\n",
-    "                \"Correlation (ρ)\",\n",
-    "                min_value=-1.0,\n",
-    "                max_value=1.0,\n",
-    "                value=1.0,\n",
-    "                step=0.1,\n",
-    "                help=\"Correlation between confounding effects on outcome and treatment\"\n",
-    "            )\n",
-    "        \n",
-    "        with col4:\n",
-    "            level = st.slider(\n",
-    "                \"Confidence Level\",\n",
-    "                min_value=0.80,\n",
-    "                max_value=0.99,\n",
-    "                value=0.95,\n",
-    "                step=0.01,\n",
-    "                format=\"%.2f\"\n",
-    "            )\n",
-    "        \n",
-    "        # Preset scenarios\n",
-    "        st.subheader(\"📋 Preset Scenarios\")\n",
-    "        \n",
-    "        scenario = st.selectbox(\n",
-    "            \"Or choose a preset scenario:\",\n",
-    "            [\"Custom\", \"Weak Confounding\", \"Moderate Confounding\", \"Strong Confounding\", \"Extreme Confounding\"]\n",
-    "        )\n",
-    "        \n",
-    "        if scenario == \"Weak Confounding\":\n",
-    "            cf_y, cf_d = 0.01, 0.01\n",
-    "        elif scenario == \"Moderate Confounding\":\n",
-    "            cf_y, cf_d = 0.05, 0.05\n",
-    "        elif scenario == \"Strong Confounding\":\n",
-    "            cf_y, cf_d = 0.10, 0.10\n",
-    "        elif scenario == \"Extreme Confounding\":\n",
-    "            cf_y, cf_d = 0.20, 0.20\n",
-    "        \n",
-    "        # Benchmarking\n",
-    "        st.markdown(\"---\")\n",
-    "        st.subheader(\"📊 Benchmarking Against Observed Variables\")\n",
-    "        \n",
-    "        st.write(\"\"\"\n",
-    "        Compare the sensitivity parameters to observed confounders to understand what level of \n",
-    "        unobserved confounding would be needed to overturn your results.\n",
-    "        \"\"\")\n",
-    "        \n",
-    "        available_vars = st.session_state.results['confounder_cols']\n",
-    "        \n",
-    "        if available_vars:\n",
-    "            benchmark_vars = st.multiselect(\n",
-    "                \"Select variables to use as benchmarks:\",\n",
-    "                available_vars,\n",
-    "                default=available_vars[:min(3, len(available_vars))],\n",
-    "                help=\"These variables will be used to calibrate the sensitivity analysis\"\n",
-    "            )\n",
-    "        else:\n",
-    "            st.warning(\"⚠️ No confounding variables available for benchmarking\")\n",
-    "            benchmark_vars = []\n",
-    "        \n",
-    "        # Run Analysis Button\n",
-    "        st.markdown(\"---\")\n",
-    "        \n",
-    "        if st.button(\"🔍 Run Sensitivity Analysis\", type=\"primary\", use_container_width=True):\n",
-    "            with st.spinner(\"Running sensitivity analysis...\"):\n",
-    "                try:\n",
-    "                    # Run sensitivity analysis\n",
-    "                    dml_plr.sensitivity_analysis(cf_y=cf_y, cf_d=cf_d, rho=rho, level=level)\n",
-    "                    \n",
-    "                    st.success(\"✅ Sensitivity analysis complete!\")\n",
-    "                    \n",
-    "                    # Display Summary\n",
-    "                    st.markdown(\"---\")\n",
-    "                    st.subheader(\"📊 Sensitivity Summary\")\n",
-    "                    \n",
-    "                    st.dataframe(dml_plr.sensitivity_summary, use_container_width=True)\n",
-    "                    \n",
-    "                    # Interpretation\n",
-    "                    st.subheader(\"📝 Interpretation\")\n",
-    "                    \n",
-    "                    theta_lower = dml_plr.sensitivity_summary['theta_lower'].iloc[0]\n",
-    "                    theta_upper = dml_plr.sensitivity_summary['theta_upper'].iloc[0]\n",
-    "                    ci_lower = dml_plr.sensitivity_summary['ci_lower'].iloc[0]\n",
-    "                    ci_upper = dml_plr.sensitivity_summary['ci_upper'].iloc[0]\n",
-    "                    \n",
-    "                    st.write(f\"\"\"\n",
-    "                    Given unobserved confounding with:\n",
-    "                    - **cf_y = {cf_y:.4f}** (explains {cf_y*100:.2f}% of outcome variance)\n",
-    "                    - **cf_d = {cf_d:.4f}** (explains {cf_d*100:.2f}% of treatment variance)\n",
-    "                    - **ρ = {rho:.2f}** (correlation between confounding effects)\n",
-    "                    \n",
-    "                    The causal effect estimate would be bounded between **{theta_lower:.4f}** and **{theta_upper:.4f}**.\n",
-    "                    \"\"\")\n",
-    "                    \n",
-    "                    # Check if zero is in bounds\n",
-    "                    if theta_lower < 0 < theta_upper:\n",
-    "                        st.warning(\"⚠️ **Zero is within the sensitivity bounds**, suggesting the effect could be overturned by unobserved confounding of this magnitude.\")\n",
-    "                    else:\n",
-    "                        st.success(\"✅ **Zero is not within the sensitivity bounds**, suggesting the effect is robust to this level of unobserved confounding.\")\n",
-    "                    \n",
-    "                    # Visualization\n",
-    "                    st.markdown(\"---\")\n",
-    "                    st.subheader(\"📈 Sensitivity Plots\")\n",
-    "                    \n",
-    "                    tab1, tab2 = st.tabs([\"Effect Bounds (θ)\", \"Confidence Interval Bounds\"])\n",
-    "                    \n",
-    "                    with tab1:\n",
-    "                        st.write(\"Shows how the point estimate changes with different levels of confounding\")\n",
-    "                        fig_theta = dml_plr.sensitivity_plot(value='theta')\n",
-    "                        st.pyplot(fig_theta)\n",
-    "                        \n",
-    "                        st.caption(\"\"\"\n",
-    "                        The plot shows the estimated causal effect across different values of confounding strength.\n",
-    "                        The shaded region represents the sensitivity bounds.\n",
-    "                        \"\"\")\n",
-    "                    \n",
-    "                    with tab2:\n",
-    "                        st.write(f\"Shows how the {level*100:.0f}% confidence interval changes with different levels of confounding\")\n",
-    "                        fig_ci = dml_plr.sensitivity_plot(value='ci', level=level)\n",
-    "                        st.pyplot(fig_ci)\n",
-    "                        \n",
-    "                        st.caption(\"\"\"\n",
-    "                        The plot shows the confidence interval bounds across different values of confounding strength.\n",
-    "                        If the bounds cross zero, the effect becomes statistically insignificant.\n",
-    "                        \"\"\")\n",
-    "                    \n",
-    "                    # Benchmarking Results\n",
-    "                    if benchmark_vars:\n",
-    "                        st.markdown(\"---\")\n",
-    "                        st.subheader(\"🎯 Benchmarking Results\")\n",
-    "                        \n",
-    "                        st.write(\"\"\"\n",
-    "                        These results compare the sensitivity parameters to observed confounders,\n",
-    "                        helping you understand what \"strength\" of unobserved confounding would be needed.\n",
-    "                        \"\"\")\n",
-    "                        \n",
-    "                        for var in benchmark_vars:\n",
-    "                            with st.expander(f\"📊 Benchmark: **{var}**\"):\n",
-    "                                try:\n",
-    "                                    bench_result = dml_plr.sensitivity_benchmark(benchmarking_set=[var])\n",
-    "                                    \n",
-    "                                    if isinstance(bench_result, dict):\n",
-    "                                        st.write(\"**Benchmark Parameters:**\")\n",
-    "                                        for key, value in bench_result.items():\n",
-    "                                            st.write(f\"- {key}: {value}\")\n",
-    "                                    else:\n",
-    "                                        st.write(bench_result)\n",
-    "                                    \n",
-    "                                    st.info(f\"\"\"\n",
-    "                                    This shows the confounding strength of **{var}**. \n",
-    "                                    If unobserved confounding is similar in strength to **{var}**, \n",
-    "                                    these would be the sensitivity parameters.\n",
-    "                                    \"\"\")\n",
-    "                                    \n",
-    "                                except Exception as e:\n",
-    "                                    st.error(f\"Error benchmarking {var}: {str(e)}\")\n",
-    "                    \n",
-    "                    # Additional Insights\n",
-    "                    st.markdown(\"---\")\n",
-    "                    st.subheader(\"💡 Key Insights\")\n",
-    "                    \n",
-    "                    with st.expander(\"🤔 How to interpret these results\"):\n",
-    "                        st.markdown(\"\"\"\n",
-    "                        **Sensitivity Analysis Guidelines:**\n",
-    "                        \n",
-    "                        1. **Small cf_y and cf_d values (< 0.05)**: Your results are robust to weak unobserved confounding\n",
-    "                        2. **Moderate values (0.05 - 0.15)**: Results require careful interpretation\n",
-    "                        3. **Large values (> 0.15)**: Results are sensitive to unobserved confounding\n",
-    "                        \n",
-    "                        **Benchmarking helps you answer:**\n",
-    "                        - \"How strong would an unobserved confounder need to be compared to my observed confounders?\"\n",
-    "                        - \"Is it plausible that such a confounder exists in my context?\"\n",
-    "                        \n",
-    "                        **Best practices:**\n",
-    "                        - Compare cf_y and cf_d to R² values from your observed confounders\n",
-    "                        - Consider domain knowledge about potential unobserved confounders\n",
-    "                        - Report sensitivity results alongside main estimates\n",
-    "                        - If results are sensitive, consider collecting additional covariates\n",
-    "                        \"\"\")\n",
-    "                    \n",
-    "                    with st.expander(\"📚 Learn More\"):\n",
-    "                        st.markdown(\"\"\"\n",
-    "                        **Resources:**\n",
-    "                        - [DoubleML Documentation](https://docs.doubleml.org/)\n",
-    "                        - Chernozhukov et al. (2018): \"Double/debiased machine learning for treatment and structural parameters\"\n",
-    "                        - Cinelli & Hazlett (2020): \"Making sense of sensitivity: Extending omitted variable bias\"\n",
-    "                        \n",
-    "                        **Citation:**\n",
-    "                        If you use this tool in research, please cite the DoubleML package and relevant methodology papers.\n",
-    "                        \"\"\")\n",
-    "                    \n",
-    "                except Exception as e:\n",
-    "                    st.error(f\"❌ Error during sensitivity analysis: {str(e)}\")\n",
-    "                    st.exception(e)\n",
-    "\n",
-    "# Footer\n",
-    "st.markdown(\"---\")\n",
-    "st.markdown(\n",
-    "    \"\"\"\n",
-    "    <div style='text-align: center; color: #666;'>\n",
-    "        <p><strong>Generic DoubleML Causal Analysis Tool</strong></p>\n",
-    "        <p>Built with Streamlit | Powered by DoubleML & FLAML</p>\n",
-    "        <p style='font-size: 0.9em;'>Support for Marketing, Healthcare, Policy, Finance & More</p>\n",
-    "    </div>\n",
-    "    \"\"\",\n",
-    "    unsafe_allow_html=True\n",
-    ")"
-   ]
-  }
- ],
- "metadata": {
-  "kernelspec": {
-   "display_name": "",
-   "name": ""
-  },
-  "language_info": {
-   "name": ""
-  }
- },
- "nbformat": 4,
- "nbformat_minor": 5
-}
+# -*- coding: utf-8 -*-
+"""doubleml_app
+
+Automatically generated by Colab.
+
+Original file is located at
+    https://colab.research.google.com/drive/1anT4NITRvnH_N7XTRNQdxY_Zy0c4yWym
+"""
+
+import streamlit as st
+import numpy as np
+import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_squared_error
+from flaml import AutoML
+import doubleml as dml
+import matplotlib.pyplot as plt
+import logging
+import time
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Page config
+st.set_page_config(page_title="DoubleML Causal Analysis", layout="wide", page_icon="📊")
+
+# Custom RMSE function
+def root_mean_squared_error(y_true, y_pred):
+    return np.sqrt(mean_squared_error(y_true, y_pred))
+
+# Generic temporal transformer
+class TemporalFeatures(BaseEstimator, TransformerMixin):
+    """Generic temporal feature engineering for time series data"""
+
+    def __init__(self, date_col="Date", include_cyclical=True, include_calendar=True,
+                 include_trend=True, include_retail_events=False):
+        self.date_col = date_col
+        self.include_cyclical = include_cyclical
+        self.include_calendar = include_calendar
+        self.include_trend = include_trend
+        self.include_retail_events = include_retail_events
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        df = X.copy()
+        df[self.date_col] = pd.to_datetime(df[self.date_col])
+        df = df.sort_values(self.date_col).reset_index(drop=True)
+
+        features_added = []
+
+        # Cyclical encodings
+        if self.include_cyclical:
+            df["month_sin"] = np.sin(2*np.pi * df[self.date_col].dt.month/12)
+            df["month_cos"] = np.cos(2*np.pi * df[self.date_col].dt.month/12)
+            df["dow_sin"] = np.sin(2*np.pi * df[self.date_col].dt.weekday/7)
+            df["dow_cos"] = np.cos(2*np.pi * df[self.date_col].dt.weekday/7)
+            df["doy_sin"] = np.sin(2*np.pi * df[self.date_col].dt.dayofyear/365)
+            df["doy_cos"] = np.cos(2*np.pi * df[self.date_col].dt.dayofyear/365)
+            features_added.extend(["month_sin", "month_cos", "dow_sin", "dow_cos", "doy_sin", "doy_cos"])
+
+        # Calendar flags
+        if self.include_calendar:
+            df["is_weekend"] = (df[self.date_col].dt.weekday >= 5).astype(int)
+            df["is_month_start"] = (df[self.date_col].dt.day <= 7).astype(int)
+            df["is_month_end"] = (df[self.date_col].dt.day >= 24).astype(int)
+            df["is_quarter_start"] = df[self.date_col].dt.month.isin([1,4,7,10]).astype(int)
+            df["is_quarter_end"] = df[self.date_col].dt.month.isin([3,6,9,12]).astype(int)
+            features_added.extend(["is_weekend", "is_month_start", "is_month_end",
+                                 "is_quarter_start", "is_quarter_end"])
+
+        # Retail/shopping season flags (optional)
+        if self.include_retail_events:
+            df["is_holiday_season"] = (
+                (df[self.date_col].dt.month==12) |
+                ((df[self.date_col].dt.month==11)&(df[self.date_col].dt.day>=15))
+            ).astype(int)
+            df["is_black_friday_week"] = (
+                (df[self.date_col].dt.month==11)&(df[self.date_col].dt.day>=20)
+            ).astype(int)
+            df["is_nordstrom_anniversary_sale"] = (
+                ((df[self.date_col].dt.month==7)&(df[self.date_col].dt.day>=15)) |
+                ((df[self.date_col].dt.month==8)&(df[self.date_col].dt.day<=10))
+            ).astype(int)
+            df["is_sephora_spring_sale"] = (
+                (df[self.date_col].dt.month==4)&
+                df[self.date_col].dt.day.between(1,20)
+            ).astype(int)
+            df["is_walmart_july_event"] = (
+                (df[self.date_col].dt.month==7)&
+                df[self.date_col].dt.day.between(10,20)
+            ).astype(int)
+            df["is_target_july_event"] = df["is_walmart_july_event"]
+            df["is_amazon_prime_days_window"] = (
+                (df[self.date_col].dt.month==7)&
+                df[self.date_col].dt.day.between(9,18)
+            ).astype(int)
+            features_added.extend([
+                "is_holiday_season", "is_black_friday_week", "is_nordstrom_anniversary_sale",
+                "is_sephora_spring_sale", "is_walmart_july_event", "is_target_july_event",
+                "is_amazon_prime_days_window"
+            ])
+
+        # Trend features
+        if self.include_trend:
+            df["time_trend"] = np.arange(len(df))
+            df["time_trend_sq"] = df["time_trend"] ** 2
+            features_added.extend(["time_trend", "time_trend_sq"])
+
+        return df.drop(columns=[self.date_col]), features_added
+
+def geometric_adstock(s, alpha=0.9, lags=7):
+    """Apply geometric adstock transformation"""
+    w = alpha ** np.arange(lags)
+    return s.rolling(lags, min_periods=1).apply(lambda x: np.dot(x[::-1], w[:len(x)]), raw=True)
+
+def apply_lag_features(df, col, lags=[1, 7, 14, 30]):
+    """Apply simple lag features"""
+    for lag in lags:
+        df[f"{col}_lag{lag}"] = df[col].shift(lag)
+    return df
+
+# Initialize session state
+if 'df' not in st.session_state:
+    st.session_state.df = None
+if 'results' not in st.session_state:
+    st.session_state.results = None
+if 'dml_plr' not in st.session_state:
+    st.session_state.dml_plr = None
+
+# Title
+st.title("📊 Generic DoubleML Causal Analysis Tool")
+st.markdown("*Flexible time series causal inference for any domain*")
+st.markdown("---")
+
+# Sidebar
+with st.sidebar:
+    st.header("Navigation")
+    step = st.radio(
+        "Select Step:",
+        ["1️⃣ Upload Data", "2️⃣ Configure Analysis", "3️⃣ Run Analysis", "4️⃣ Sensitivity Analysis"],
+        key="nav_step"
+    )
+    st.markdown("---")
+    st.info("💡 **Tip**: Follow the steps in order for best results.")
+
+    with st.expander("ℹ️ About This Tool"):
+        st.markdown("""
+        This tool implements **Double Machine Learning (DoubleML)** for causal inference on time series data.
+
+        **Use cases:**
+        - Marketing: Ad spend → Sales
+        - Healthcare: Treatment → Outcomes
+        - Policy: Intervention → Impact
+        - Finance: Events → Returns
+        - Operations: Changes → Metrics
+        """)
+
+# Step 1: Upload Data
+if step == "1️⃣ Upload Data":
+    st.header("Step 1: Upload Your Dataset")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+
+    with col2:
+        st.info("**Requirements:**\n- Time series data\n- Date column\n- Outcome variable\n- Treatment variable")
+
+    if uploaded_file is not None:
+        df = pd.read_csv(uploaded_file)
+        st.session_state.df = df
+
+        st.success(f"✅ Dataset uploaded successfully! {len(df)} rows × {len(df.columns)} columns")
+
+        tab1, tab2, tab3 = st.tabs(["📊 Preview", "📈 Summary Stats", "🔍 Data Quality"])
+
+        with tab1:
+            st.dataframe(df.head(20), use_container_width=True)
+
+        with tab2:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**Numeric Columns:**")
+                st.dataframe(df.describe())
+            with col2:
+                st.write("**Data Types:**")
+                st.dataframe(pd.DataFrame(df.dtypes, columns=['Data Type']))
+
+        with tab3:
+            missing = df.isnull().sum()
+            if missing.sum() > 0:
+                st.warning(f"⚠️ Missing values detected in {(missing > 0).sum()} columns:")
+                missing_df = pd.DataFrame({
+                    'Column': missing[missing > 0].index,
+                    'Missing Count': missing[missing > 0].values,
+                    'Missing %': (missing[missing > 0].values / len(df) * 100).round(2)
+                })
+                st.dataframe(missing_df)
+            else:
+                st.success("✅ No missing values detected")
+
+            # Check for potential date columns
+            potential_dates = [col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()]
+            if potential_dates:
+                st.info(f"🗓️ Potential date columns detected: {', '.join(potential_dates)}")
+
+    else:
+        st.info("👆 Please upload a CSV file to begin")
+
+# Step 2: Configure Analysis
+elif step == "2️⃣ Configure Analysis":
+    st.header("Step 2: Configure Your Analysis")
+
+    if st.session_state.df is None:
+        st.warning("⚠️ Please upload data first (Step 1)")
+    else:
+        df = st.session_state.df
+
+        # Core Variables Section
+        st.subheader("🎯 Core Variables")
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            date_col = st.selectbox("📅 Date Column", df.columns.tolist(), key="date_col")
+
+        with col2:
+            outcome_col = st.selectbox("📊 Outcome Variable (Y)",
+                                      [col for col in df.columns if col != date_col],
+                                      key="outcome_col")
+
+        with col3:
+            treatment_col = st.selectbox("💉 Treatment Variable (D)",
+                                        [col for col in df.columns if col not in [date_col, outcome_col]],
+                                        key="treatment_col")
+
+        # Confounders Section
+        st.markdown("---")
+        st.subheader("🔧 Confounding Variables")
+
+        available_cols = [col for col in df.columns if col not in [date_col, outcome_col, treatment_col]]
+        confounder_cols = st.multiselect(
+            "Select confounding variables (X) - variables that affect both treatment and outcome",
+            available_cols,
+            help="These are the observed covariates that may confound the causal relationship",
+            key="confounder_cols"
+        )
+
+        # Treatment Transformation Section
+        st.markdown("---")
+        st.subheader("🔄 Treatment Transformation (Optional)")
+
+        col1, col2 = st.columns([1, 2])
+
+        with col1:
+            treatment_transform = st.selectbox(
+                "Transform treatment variable?",
+                ["None", "Adstock (Geometric Decay)", "Simple Lags"],
+                help="Apply transformations to capture delayed/cumulative effects"
+            )
+
+        with col2:
+            if treatment_transform == "Adstock (Geometric Decay)":
+                st.info("**Adstock** models carryover effects (common in marketing/advertising)")
+                col2a, col2b = st.columns(2)
+                with col2a:
+                    alpha = st.slider("Decay Rate (α)", 0.0, 1.0, 0.9, 0.05,
+                                     help="How quickly effects decay (higher = slower decay)")
+                with col2b:
+                    lags = st.slider("Number of Lags", 1, 30, 7,
+                                    help="How many periods to look back")
+            elif treatment_transform == "Simple Lags":
+                st.info("**Simple Lags** use past values as features")
+                lag_periods = st.multiselect("Lag periods", [1, 7, 14, 30, 60, 90], default=[1, 7])
+
+        # Feature Engineering Section
+        st.markdown("---")
+        st.subheader("🛠️ Feature Engineering")
+
+        st.write("Select which temporal features to automatically generate:")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            include_cyclical = st.checkbox("📈 Cyclical Features", value=True,
+                                          help="Sin/cos encodings for month, day of week, day of year")
+
+        with col2:
+            include_calendar = st.checkbox("📅 Calendar Features", value=True,
+                                          help="Weekend, month start/end, quarter flags")
+
+        with col3:
+            include_trend = st.checkbox("📉 Trend Features", value=True,
+                                       help="Linear and quadratic time trends")
+
+        with col4:
+            include_retail = st.checkbox("🛍️ Retail Events", value=False,
+                                        help="Holiday season, Black Friday, Prime Day, etc.")
+
+        # Model Configuration Section
+        st.markdown("---")
+        st.subheader("⚙️ Model Configuration")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            n_folds = st.slider("CV Folds", 2, 10, 5,
+                               help="Number of time series cross-validation folds")
+
+        with col2:
+            time_budget = st.slider("FLAML Time Budget (s)", 30, 600, 120, 30,
+                                   help="Time budget per model (outcome & treatment)")
+
+        with col3:
+            estimators = st.multiselect(
+                "ML Estimators",
+                ["lgbm", "xgboost", "histgb", "xgb_limitdepth", "catboost", "rf", "extra_tree"],
+                default=["lgbm", "xgboost", "histgb"],
+                help="Machine learning algorithms to try"
+            )
+
+        # Advanced Options
+        with st.expander("🔬 Advanced Options"):
+            col1, col2 = st.columns(2)
+
+            with col1:
+                score_type = st.selectbox(
+                    "DML Score Type",
+                    ["partialling out", "IV-type"],
+                    help="Orthogonalization approach for DML"
+                )
+
+                n_rep = st.slider("Number of Repetitions", 1, 10, 1,
+                                 help="Repeated sample splitting for stability")
+
+            with col2:
+                dml_procedure = st.selectbox(
+                    "DML Procedure",
+                    ["dml1", "dml2"],
+                    index=1,
+                    help="DML1: no cross-fitting, DML2: with cross-fitting"
+                )
+
+                trim_threshold = st.slider("Propensity Score Trimming", 0.0, 0.2, 0.01, 0.01,
+                                          help="Trim extreme propensity scores (0 = no trimming)")
+
+        # Save Configuration
+        st.markdown("---")
+        if st.button("✅ Confirm Configuration", type="primary", use_container_width=True):
+
+            # Validate configuration
+            if not confounder_cols:
+                st.warning("⚠️ Consider adding confounding variables for more robust estimates")
+
+            config = {
+                'date_col': date_col,
+                'outcome_col': outcome_col,
+                'treatment_col': treatment_col,
+                'confounder_cols': confounder_cols,
+                'treatment_transform': treatment_transform,
+                'n_folds': n_folds,
+                'time_budget': time_budget,
+                'estimators': estimators,
+                'include_cyclical': include_cyclical,
+                'include_calendar': include_calendar,
+                'include_trend': include_trend,
+                'include_retail': include_retail,
+                'score_type': score_type,
+                'n_rep': n_rep,
+                'dml_procedure': dml_procedure,
+                'trim_threshold': trim_threshold
+            }
+
+            # Add transformation-specific params
+            if treatment_transform == "Adstock (Geometric Decay)":
+                config['alpha'] = alpha
+                config['lags'] = lags
+            elif treatment_transform == "Simple Lags":
+                config['lag_periods'] = lag_periods
+
+            st.session_state.variable_config = config
+
+            # Show configuration summary
+            st.success("✅ Configuration saved! Here's your setup:")
+
+            summary_col1, summary_col2 = st.columns(2)
+
+            with summary_col1:
+                st.write("**Variables:**")
+                st.write(f"- Outcome: `{outcome_col}`")
+                st.write(f"- Treatment: `{treatment_col}`")
+                st.write(f"- Confounders: {len(confounder_cols)}")
+
+            with summary_col2:
+                st.write("**Configuration:**")
+                st.write(f"- Transform: {treatment_transform}")
+                st.write(f"- CV Folds: {n_folds}")
+                st.write(f"- Time Budget: {time_budget}s")
+
+            st.info("👉 Proceed to Step 3 to run the analysis")
+
+# Step 3: Run Analysis
+elif step == "3️⃣ Run Analysis":
+    st.header("Step 3: Run Causal Analysis")
+
+    if st.session_state.df is None:
+        st.warning("⚠️ Please upload data first (Step 1)")
+    elif 'variable_config' not in st.session_state:
+        st.warning("⚠️ Please configure your analysis first (Step 2)")
+    else:
+        config = st.session_state.variable_config
+
+        # Configuration Summary
+        st.subheader("📋 Configuration Summary")
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("Outcome", config['outcome_col'])
+            st.metric("Treatment", config['treatment_col'])
+
+        with col2:
+            st.metric("Confounders", len(config['confounder_cols']))
+            st.metric("Transform", config['treatment_transform'].split()[0])
+
+        with col3:
+            st.metric("CV Folds", config['n_folds'])
+            st.metric("Estimators", len(config['estimators']))
+
+        with col4:
+            st.metric("Time Budget", f"{config['time_budget']}s")
+            st.metric("DML Score", config['score_type'].split()[0])
+
+        st.markdown("---")
+
+        if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
+            with st.spinner("Running analysis... This may take several minutes."):
+                try:
+                    # Progress tracking
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+
+                    # Step 1: Load and preprocess
+                    status_text.text("Step 1/7: Loading and preprocessing data...")
+                    progress_bar.progress(5)
+
+                    df = st.session_state.df.copy()
+
+                    # Handle missing values in treatment
+                    if df[config['treatment_col']].isnull().any():
+                        df[config['treatment_col']].fillna(method='ffill', inplace=True)
+
+                    # Step 2: Apply treatment transformation
+                    status_text.text("Step 2/7: Applying treatment transformation...")
+                    progress_bar.progress(15)
+
+                    treatment_var_name = config['treatment_col']
+
+                    if config['treatment_transform'] == "Adstock (Geometric Decay)":
+                        df["transformed_treatment"] = geometric_adstock(
+                            df[config['treatment_col']],
+                            alpha=config['alpha'],
+                            lags=config['lags']
+                        )
+                        treatment_var_name = "transformed_treatment"
+                    elif config['treatment_transform'] == "Simple Lags":
+                        df = apply_lag_features(df, config['treatment_col'], config['lag_periods'])
+                        # Keep original as primary, but lags will be in confounders
+                        treatment_var_name = config['treatment_col']
+                    else:
+                        df["transformed_treatment"] = df[config['treatment_col']]
+                        treatment_var_name = "transformed_treatment"
+
+                    # Drop rows with missing outcome or treatment
+                    df.dropna(subset=[config['outcome_col'], treatment_var_name], inplace=True)
+                    df.reset_index(drop=True, inplace=True)
+
+                    # Step 3: Feature engineering
+                    status_text.text("Step 3/7: Engineering temporal features...")
+                    progress_bar.progress(25)
+
+                    transformer = TemporalFeatures(
+                        date_col=config['date_col'],
+                        include_cyclical=config['include_cyclical'],
+                        include_calendar=config['include_calendar'],
+                        include_trend=config['include_trend'],
+                        include_retail_events=config['include_retail']
+                    )
+
+                    df_temp, temp_feats = transformer.fit_transform(df)
+
+                    # Combine all features
+                    all_x = config['confounder_cols'] + temp_feats
+
+                    # Build model dataframe
+                    df_model = pd.concat([
+                        df_temp[temp_feats],
+                        df[config['confounder_cols']],
+                        df[[config['outcome_col'], treatment_var_name]]
+                    ], axis=1).loc[:, lambda d: ~d.columns.duplicated()]
+
+                    # Drop any remaining NaNs
+                    df_model.dropna(inplace=True)
+
+                    st.info(f"📊 Analysis dataset: {len(df_model)} observations, {len(all_x)} features")
+
+                    # Step 4: Set up cross-validation
+                    status_text.text("Step 4/7: Setting up time series cross-validation...")
+                    progress_bar.progress(35)
+
+                    my_splitter = TimeSeriesSplit(n_splits=config['n_folds'])
+
+                    X_all = df_model[all_x]
+                    y_outcome = df_model[config['outcome_col']]
+                    d_treatment = df_model[treatment_var_name]
+
+                    # Step 5: Fit outcome model
+                    status_text.text("Step 5/7: Fitting outcome model (ml_l)...")
+                    progress_bar.progress(45)
+
+                    automl_l = AutoML()
+                    automl_l.fit(
+                        X_train=X_all, y_train=y_outcome,
+                        task="regression", metric="rmse",
+                        time_budget=config['time_budget'],
+                        split_type=my_splitter,
+                        estimator_list=config['estimators'],
+                        verbose=0
+                    )
+
+                    # Step 6: Fit treatment model
+                    status_text.text("Step 6/7: Fitting treatment model (ml_m)...")
+                    progress_bar.progress(60)
+
+                    automl_m = AutoML()
+                    automl_m.fit(
+                        X_train=X_all, y_train=d_treatment,
+                        task="regression", metric="rmse",
+                        time_budget=config['time_budget'],
+                        split_type=my_splitter,
+                        estimator_list=config['estimators'],
+                        verbose=0
+                    )
+
+                    # Step 7: Generate CV predictions
+                    status_text.text("Step 7/7: Generating cross-validated predictions and computing causal effect...")
+                    progress_bar.progress(75)
+
+                    cv_preds_l = np.full_like(y_outcome, fill_value=np.nan, dtype=float)
+                    cv_preds_m = np.full_like(d_treatment, fill_value=np.nan, dtype=float)
+
+                    best_estimator_l = automl_l.model.estimator
+                    best_estimator_m = automl_m.model.estimator
+
+                    for fold_idx, (train_idx, test_idx) in enumerate(my_splitter.split(X_all)):
+                        best_estimator_l.fit(X_all.iloc[train_idx], y_outcome.iloc[train_idx])
+                        cv_preds_l[test_idx] = best_estimator_l.predict(X_all.iloc[test_idx])
+                        best_estimator_m.fit(X_all.iloc[train_idx], d_treatment.iloc[train_idx])
+                        cv_preds_m[test_idx] = best_estimator_m.predict(X_all.iloc[test_idx])
+
+                    mask = ~np.isnan(cv_preds_l)
+
+                    cv_loss_l = root_mean_squared_error(y_outcome[mask], cv_preds_l[mask])
+                    cv_loss_m = root_mean_squared_error(d_treatment[mask], cv_preds_m[mask])
+
+                    # Prepare DoubleML
+                    y_for_doubleml = y_outcome.iloc[mask]
+                    d_for_doubleml = d_treatment.iloc[mask]
+
+                    df_for_doubleml = pd.concat([
+                        pd.Series(y_for_doubleml, name=config['outcome_col'], index=y_for_doubleml.index),
+                        pd.Series(d_for_doubleml, name=treatment_var_name, index=y_for_doubleml.index),
+                        pd.Series(np.zeros_like(y_for_doubleml), name="dummy_x", index=y_for_doubleml.index),
+                    ], axis=1)
+
+                    dml_data = dml.DoubleMLData(
+                        df_for_doubleml,
+                        y_col=config['outcome_col'],
+                        d_cols=treatment_var_name,
+                        x_cols=["dummy_x"]
+                    )
+
+                    # Fit DoubleML
+                    progress_bar.progress(90)
+
+                    ml_l_dummy = dml.utils.DMLDummyRegressor()
+                    ml_m_dummy = dml.utils.DMLDummyRegressor()
+
+                    pred_dict = {
+                        treatment_var_name: {
+                            "ml_l": cv_preds_l[mask].reshape(-1, 1),
+                            "ml_m": cv_preds_m[mask].reshape(-1, 1),
+                        }
+                    }
+
+                    dml_plr = dml.DoubleMLPLR(
+                        dml_data,
+                        ml_l=ml_l_dummy,
+                        ml_m=ml_m_dummy,
+                        n_folds=config['n_folds'],
+                        n_rep=config['n_rep'],
+                        score=config['score_type']
+                    )
+
+                    dml_plr.fit(external_predictions=pred_dict)
+
+                    progress_bar.progress(100)
+                    status_text.text("✅ Analysis complete!")
+
+                    # Store results
+                    st.session_state.results = {
+                        'dml_plr': dml_plr,
+                        'cv_loss_l': cv_loss_l,
+                        'cv_loss_m': cv_loss_m,
+                        'n_obs': dml_data.n_obs,
+                        'mask_sum': mask.sum(),
+                        'total_obs': len(df_model),
+                        'confounder_cols': config['confounder_cols'],
+                        'treatment_var_name': treatment_var_name,
+                        'best_estimator_l': automl_l.best_estimator,
+                        'best_estimator_m': automl_m.best_estimator,
+                        'temporal_features': temp_feats
+                    }
+                    st.session_state.dml_plr = dml_plr
+
+                    time.sleep(0.5)
+                    progress_bar.empty()
+                    status_text.empty()
+
+                    st.success("✅ Analysis completed successfully!")
+
+                    # Display Results
+                    st.markdown("---")
+                    st.header("📊 Causal Effect Estimates")
+
+                    # Main metrics
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.metric("Causal Effect (θ)", f"{dml_plr.coef[0]:.6f}",
+                                 help="Average treatment effect on the outcome")
+                        st.metric("Standard Error", f"{dml_plr.se[0]:.6f}")
+
+                    with col2:
+                        ci_lower = dml_plr.confint().iloc[0, 0]
+                        ci_upper = dml_plr.confint().iloc[0, 1]
+                        st.metric("95% CI Lower", f"{ci_lower:.6f}")
+                        st.metric("95% CI Upper", f"{ci_upper:.6f}")
+
+                    with col3:
+                        p_val = dml_plr.pval[0]
+                        st.metric("P-value", f"{p_val:.6f}")
+                        if p_val < 0.05:
+                            st.success("✅ Statistically significant (p < 0.05)")
+                        else:
+                            st.warning("⚠️ Not statistically significant (p ≥ 0.05)")
+
+                    # Interpretation
+                    st.subheader("📝 Interpretation")
+                    effect = dml_plr.coef[0]
+                    if effect > 0:
+                        st.info(f"📈 A one-unit increase in **{config['treatment_col']}** is associated with a **{effect:.4f}** unit increase in **{config['outcome_col']}** (on average, all else equal).")
+                    else:
+                        st.info(f"📉 A one-unit increase in **{config['treatment_col']}** is associated with a **{abs(effect):.4f}** unit decrease in **{config['outcome_col']}** (on average, all else equal).")
+
+                    # Summary table
+                    st.subheader("📋 Detailed Summary")
+                    summary_df = dml_plr.summary
+                    st.dataframe(summary_df, use_container_width=True)
+
+                    # Model Performance
+                    st.markdown("---")
+                    st.subheader("🎯 Nuisance Model Performance")
+
+                    perf_col1, perf_col2, perf_col3 = st.columns(3)
+
+                    with perf_col1:
+                        st.metric("Outcome Model RMSE", f"{cv_loss_l:.4f}",
+                                 help="Lower is better - measures prediction accuracy for outcome")
+
+                    with perf_col2:
+                        st.metric("Treatment Model RMSE", f"{cv_loss_m:.4f}",
+                                 help="Lower is better - measures prediction accuracy for treatment")
+
+                    with perf_col3:
+                        st.metric("Best Outcome Estimator", automl_l.best_estimator)
+                        st.metric("Best Treatment Estimator", automl_m.best_estimator)
+
+                    # Data Processing Details
+                    with st.expander("📈 Data Processing Details"):
+                        st.write(f"**Original observations:** {len(df_model)}")
+                        st.write(f"**Valid CV predictions:** {mask.sum()} ({100*mask.sum()/len(df_model):.1f}%)")
+                        st.write(f"**Used for DoubleML:** {dml_data.n_obs}")
+                        st.write(f"**Time series folds:** {config['n_folds']}")
+                        st.write(f"**Total features used:** {len(all_x)}")
+                        st.write(f"**Temporal features added:** {len(temp_feats)}")
+
+                        if config['treatment_transform'] != "None":
+                            st.write(f"**Treatment transformation:** {config['treatment_transform']}")
+
+                    # Feature Importance (if available)
+                    with st.expander("🔍 Feature Information"):
+                        st.write("**Confounding Variables:**")
+                        st.write(", ".join(config['confounder_cols']) if config['confounder_cols'] else "None")
+
+                        st.write("\n**Temporal Features Added:**")
+                        st.write(", ".join(temp_feats))
+
+                    st.markdown("---")
+                    st.info("👉 Proceed to Step 4 for sensitivity analysis to test robustness to unobserved confounding")
+
+                except Exception as e:
+                    st.error(f"❌ Error during analysis: {str(e)}")
+                    st.exception(e)
+                    progress_bar.empty()
+                    status_text.empty()
+
+# Step 4: Sensitivity Analysis
+elif step == "4️⃣ Sensitivity Analysis":
+    st.header("Step 4: Sensitivity Analysis")
+
+    if st.session_state.results is None:
+        st.warning("⚠️ Please run the analysis first (Step 3)")
+    else:
+        dml_plr = st.session_state.results['dml_plr']
+
+        st.info("""
+        📊 **Sensitivity Analysis** assesses how robust your causal estimates are to potential **unobserved confounding**.
+
+        Even after controlling for observed confounders, there may be unmeasured variables that affect both treatment and outcome.
+        This analysis shows how strong such confounding would need to be to change your conclusions.
+        """)
+
+        # Sensitivity Parameters
+        st.subheader("🎛️ Sensitivity Parameters")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            cf_y = st.number_input(
+                "Partial R² with outcome (cf_y)",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.05,
+                step=0.01,
+                format="%.4f",
+                help="Strength of association between unobserved confounder and outcome (0-1)"
+            )
+
+            st.caption("💡 Represents how much of the outcome variance the unobserved confounder explains")
+
+        with col2:
+            cf_d = st.number_input(
+                "Partial R² with treatment (cf_d)",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.05,
+                step=0.01,
+                format="%.4f",
+                help="Strength of association between unobserved confounder and treatment (0-1)"
+            )
+
+            st.caption("💡 Represents how much of the treatment variance the unobserved confounder explains")
+
+        col3, col4 = st.columns(2)
+
+        with col3:
+            rho = st.slider(
+                "Correlation (ρ)",
+                min_value=-1.0,
+                max_value=1.0,
+                value=1.0,
+                step=0.1,
+                help="Correlation between confounding effects on outcome and treatment"
+            )
+
+        with col4:
+            level = st.slider(
+                "Confidence Level",
+                min_value=0.80,
+                max_value=0.99,
+                value=0.95,
+                step=0.01,
+                format="%.2f"
+            )
+
+        # Preset scenarios
+        st.subheader("📋 Preset Scenarios")
+
+        scenario = st.selectbox(
+            "Or choose a preset scenario:",
+            ["Custom", "Weak Confounding", "Moderate Confounding", "Strong Confounding", "Extreme Confounding"]
+        )
+
+        if scenario == "Weak Confounding":
+            cf_y, cf_d = 0.01, 0.01
+        elif scenario == "Moderate Confounding":
+            cf_y, cf_d = 0.05, 0.05
+        elif scenario == "Strong Confounding":
+            cf_y, cf_d = 0.10, 0.10
+        elif scenario == "Extreme Confounding":
+            cf_y, cf_d = 0.20, 0.20
+
+        # Benchmarking
+        st.markdown("---")
+        st.subheader("📊 Benchmarking Against Observed Variables")
+
+        st.write("""
+        Compare the sensitivity parameters to observed confounders to understand what level of
+        unobserved confounding would be needed to overturn your results.
+        """)
+
+        available_vars = st.session_state.results['confounder_cols']
+
+        if available_vars:
+            benchmark_vars = st.multiselect(
+                "Select variables to use as benchmarks:",
+                available_vars,
+                default=available_vars[:min(3, len(available_vars))],
+                help="These variables will be used to calibrate the sensitivity analysis"
+            )
+        else:
+            st.warning("⚠️ No confounding variables available for benchmarking")
+            benchmark_vars = []
+
+        # Run Analysis Button
+        st.markdown("---")
+
+        if st.button("🔍 Run Sensitivity Analysis", type="primary", use_container_width=True):
+            with st.spinner("Running sensitivity analysis..."):
+                try:
+                    # Run sensitivity analysis
+                    dml_plr.sensitivity_analysis(cf_y=cf_y, cf_d=cf_d, rho=rho, level=level)
+
+                    st.success("✅ Sensitivity analysis complete!")
+
+                    # Display Summary
+                    st.markdown("---")
+                    st.subheader("📊 Sensitivity Summary")
+
+                    st.dataframe(dml_plr.sensitivity_summary, use_container_width=True)
+
+                    # Interpretation
+                    st.subheader("📝 Interpretation")
+
+                    theta_lower = dml_plr.sensitivity_summary['theta_lower'].iloc[0]
+                    theta_upper = dml_plr.sensitivity_summary['theta_upper'].iloc[0]
+                    ci_lower = dml_plr.sensitivity_summary['ci_lower'].iloc[0]
+                    ci_upper = dml_plr.sensitivity_summary['ci_upper'].iloc[0]
+
+                    st.write(f"""
+                    Given unobserved confounding with:
+                    - **cf_y = {cf_y:.4f}** (explains {cf_y*100:.2f}% of outcome variance)
+                    - **cf_d = {cf_d:.4f}** (explains {cf_d*100:.2f}% of treatment variance)
+                    - **ρ = {rho:.2f}** (correlation between confounding effects)
+
+                    The causal effect estimate would be bounded between **{theta_lower:.4f}** and **{theta_upper:.4f}**.
+                    """)
+
+                    # Check if zero is in bounds
+                    if theta_lower < 0 < theta_upper:
+                        st.warning("⚠️ **Zero is within the sensitivity bounds**, suggesting the effect could be overturned by unobserved confounding of this magnitude.")
+                    else:
+                        st.success("✅ **Zero is not within the sensitivity bounds**, suggesting the effect is robust to this level of unobserved confounding.")
+
+                    # Visualization
+                    st.markdown("---")
+                    st.subheader("📈 Sensitivity Plots")
+
+                    tab1, tab2 = st.tabs(["Effect Bounds (θ)", "Confidence Interval Bounds"])
+
+                    with tab1:
+                        st.write("Shows how the point estimate changes with different levels of confounding")
+                        fig_theta = dml_plr.sensitivity_plot(value='theta')
+                        st.pyplot(fig_theta)
+
+                        st.caption("""
+                        The plot shows the estimated causal effect across different values of confounding strength.
+                        The shaded region represents the sensitivity bounds.
+                        """)
+
+                    with tab2:
+                        st.write(f"Shows how the {level*100:.0f}% confidence interval changes with different levels of confounding")
+                        fig_ci = dml_plr.sensitivity_plot(value='ci', level=level)
+                        st.pyplot(fig_ci)
+
+                        st.caption("""
+                        The plot shows the confidence interval bounds across different values of confounding strength.
+                        If the bounds cross zero, the effect becomes statistically insignificant.
+                        """)
+
+                    # Benchmarking Results
+                    if benchmark_vars:
+                        st.markdown("---")
+                        st.subheader("🎯 Benchmarking Results")
+
+                        st.write("""
+                        These results compare the sensitivity parameters to observed confounders,
+                        helping you understand what "strength" of unobserved confounding would be needed.
+                        """)
+
+                        for var in benchmark_vars:
+                            with st.expander(f"📊 Benchmark: **{var}**"):
+                                try:
+                                    bench_result = dml_plr.sensitivity_benchmark(benchmarking_set=[var])
+
+                                    if isinstance(bench_result, dict):
+                                        st.write("**Benchmark Parameters:**")
+                                        for key, value in bench_result.items():
+                                            st.write(f"- {key}: {value}")
+                                    else:
+                                        st.write(bench_result)
+
+                                    st.info(f"""
+                                    This shows the confounding strength of **{var}**.
+                                    If unobserved confounding is similar in strength to **{var}**,
+                                    these would be the sensitivity parameters.
+                                    """)
+
+                                except Exception as e:
+                                    st.error(f"Error benchmarking {var}: {str(e)}")
+
+                    # Additional Insights
+                    st.markdown("---")
+                    st.subheader("💡 Key Insights")
+
+                    with st.expander("🤔 How to interpret these results"):
+                        st.markdown("""
+                        **Sensitivity Analysis Guidelines:**
+
+                        1. **Small cf_y and cf_d values (< 0.05)**: Your results are robust to weak unobserved confounding
+                        2. **Moderate values (0.05 - 0.15)**: Results require careful interpretation
+                        3. **Large values (> 0.15)**: Results are sensitive to unobserved confounding
+
+                        **Benchmarking helps you answer:**
+                        - "How strong would an unobserved confounder need to be compared to my observed confounders?"
+                        - "Is it plausible that such a confounder exists in my context?"
+
+                        **Best practices:**
+                        - Compare cf_y and cf_d to R² values from your observed confounders
+                        - Consider domain knowledge about potential unobserved confounders
+                        - Report sensitivity results alongside main estimates
+                        - If results are sensitive, consider collecting additional covariates
+                        """)
+
+                    with st.expander("📚 Learn More"):
+                        st.markdown("""
+                        **Resources:**
+                        - [DoubleML Documentation](https://docs.doubleml.org/)
+                        - Chernozhukov et al. (2018): "Double/debiased machine learning for treatment and structural parameters"
+                        - Cinelli & Hazlett (2020): "Making sense of sensitivity: Extending omitted variable bias"
+
+                        **Citation:**
+                        If you use this tool in research, please cite the DoubleML package and relevant methodology papers.
+                        """)
+
+                except Exception as e:
+                    st.error(f"❌ Error during sensitivity analysis: {str(e)}")
+                    st.exception(e)
+
+# Footer
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: #666;'>
+        <p><strong>Generic DoubleML Causal Analysis Tool</strong></p>
+        <p>Built with Streamlit | Powered by DoubleML & FLAML</p>
+        <p style='font-size: 0.9em;'>Support for Marketing, Healthcare, Policy, Finance & More</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
