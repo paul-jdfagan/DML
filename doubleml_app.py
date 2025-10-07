@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Page config
-st.set_page_config(page_title="DoubleML Causal Analysis", layout="wide", page_icon="📊")
+st.set_page_config(page_title="DoubleML Causal Analysis", layout="wide")
 
 # Custom RMSE function
 def root_mean_squared_error(y_true, y_pred):
@@ -132,7 +132,7 @@ if 'dml_plr' not in st.session_state:
     st.session_state.dml_plr = None
 
 # Title
-st.title("📊 Generic DoubleML Causal Analysis Tool")
+st.title("Generic DoubleML Causal Analysis Tool")
 st.markdown("*Flexible time series causal inference for any domain*")
 st.markdown("---")
 
@@ -177,7 +177,7 @@ if step == "1️⃣ Upload Data":
 
         st.success(f"✅ Dataset uploaded successfully! {len(df)} rows × {len(df.columns)} columns")
 
-        tab1, tab2, tab3 = st.tabs(["📊 Preview", "📈 Summary Stats", "🔍 Data Quality"])
+        tab1, tab2, tab3 = st.tabs(["Preview", "Summary Stats", "Data Quality"])
 
         with tab1:
             st.dataframe(df.head(20), use_container_width=True)
@@ -222,14 +222,14 @@ elif step == "2️⃣ Configure Analysis":
         df = st.session_state.df
 
         # Core Variables Section
-        st.subheader("🎯 Core Variables")
+        st.subheader(" Core Variables")
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            date_col = st.selectbox("📅 Date Column", df.columns.tolist(), key="date_col")
+            date_col = st.selectbox("Date Column", df.columns.tolist(), key="date_col")
 
         with col2:
-            outcome_col = st.selectbox("📊 Outcome Variable (Y)",
+            outcome_col = st.selectbox("Outcome Variable (Y)",
                                       [col for col in df.columns if col != date_col],
                                       key="outcome_col")
 
@@ -252,7 +252,7 @@ elif step == "2️⃣ Configure Analysis":
 
         # Treatment Transformation Section
         st.markdown("---")
-        st.subheader("🔄 Treatment Transformation (Optional)")
+        st.subheader("Treatment Transformation (Optional)")
 
         col1, col2 = st.columns([1, 2])
 
@@ -279,31 +279,31 @@ elif step == "2️⃣ Configure Analysis":
 
         # Feature Engineering Section
         st.markdown("---")
-        st.subheader("🛠️ Feature Engineering")
+        st.subheader("Feature Engineering")
 
         st.write("Select which temporal features to automatically generate:")
 
         col1, col2, col3, col4 = st.columns(4)
 
         with col1:
-            include_cyclical = st.checkbox("📈 Cyclical Features", value=True,
+            include_cyclical = st.checkbox("Cyclical Features", value=True,
                                           help="Sin/cos encodings for month, day of week, day of year")
 
         with col2:
-            include_calendar = st.checkbox("📅 Calendar Features", value=True,
+            include_calendar = st.checkbox("Calendar Features", value=True,
                                           help="Weekend, month start/end, quarter flags")
 
         with col3:
-            include_trend = st.checkbox("📉 Trend Features", value=True,
+            include_trend = st.checkbox("Trend Features", value=True,
                                        help="Linear and quadratic time trends")
 
         with col4:
-            include_retail = st.checkbox("🛍️ Retail Events", value=False,
+            include_retail = st.checkbox("Retail Events", value=False,
                                         help="Holiday season, Black Friday, Prime Day, etc.")
 
         # Model Configuration Section
         st.markdown("---")
-        st.subheader("⚙️ Model Configuration")
+        st.subheader(" Model Configuration")
 
         col1, col2, col3 = st.columns(3)
 
@@ -324,7 +324,7 @@ elif step == "2️⃣ Configure Analysis":
             )
 
         # Advanced Options
-        with st.expander("🔬 Advanced Options"):
+        with st.expander("Advanced Options"):
             col1, col2 = st.columns(2)
 
             with col1:
@@ -437,7 +437,7 @@ elif step == "3️⃣ Run Analysis":
 
         st.markdown("---")
 
-        if st.button("🚀 Run Analysis", type="primary", use_container_width=True):
+        if st.button("Run Analysis", type="primary", use_container_width=True):
             with st.spinner("Running analysis... This may take several minutes."):
                 try:
                     # Progress tracking
@@ -663,18 +663,18 @@ elif step == "3️⃣ Run Analysis":
                     st.subheader("📝 Interpretation")
                     effect = dml_plr.coef[0]
                     if effect > 0:
-                        st.info(f"📈 A one-unit increase in **{config['treatment_col']}** is associated with a **{effect:.4f}** unit increase in **{config['outcome_col']}** (on average, all else equal).")
+                        st.info(f"A one-unit increase in **{config['treatment_col']}** is associated with a **{effect:.4f}** unit increase in **{config['outcome_col']}** (on average, all else equal).")
                     else:
-                        st.info(f"📉 A one-unit increase in **{config['treatment_col']}** is associated with a **{abs(effect):.4f}** unit decrease in **{config['outcome_col']}** (on average, all else equal).")
+                        st.info(f"A one-unit increase in **{config['treatment_col']}** is associated with a **{abs(effect):.4f}** unit decrease in **{config['outcome_col']}** (on average, all else equal).")
 
                     # Summary table
-                    st.subheader("📋 Detailed Summary")
+                    st.subheader("Detailed Summary")
                     summary_df = dml_plr.summary
                     st.dataframe(summary_df, use_container_width=True)
 
                     # Model Performance
                     st.markdown("---")
-                    st.subheader("🎯 Nuisance Model Performance")
+                    st.subheader("Nuisance Model Performance")
 
                     perf_col1, perf_col2, perf_col3 = st.columns(3)
 
@@ -722,7 +722,7 @@ elif step == "3️⃣ Run Analysis":
 # Step 4: Sensitivity Analysis
 # Display Summary
 st.markdown("---")
-st.subheader("📊 Sensitivity Summary")
+st.subheader("Sensitivity Summary")
 
 summary = getattr(dml_plr, "sensitivity_summary", None)
 
