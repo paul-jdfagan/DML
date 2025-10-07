@@ -860,7 +860,7 @@ elif step == "4️⃣ Sensitivity Analysis":
                         fig_theta, ax_theta = plt.subplots()
                         
                         # Pass the axes to the plotting function
-                        dml_plr.sensitivity_plot(value='theta', ax=ax_theta)
+                        dml_plr.sensitivity_plot(value='theta')
                         
                         # Pass your own figure object to Streamlit
                         st.pyplot(fig_theta)
