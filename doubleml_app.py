@@ -828,14 +828,23 @@ elif step == "4️⃣ Sensitivity Analysis":
                     dml_plr.sensitivity_analysis(cf_y=cf_y, cf_d=cf_d, rho=rho, level=level)
                     
                     st.success("✅ Sensitivity analysis complete!")
-    
-                   # After running: dml_plr.sensitivity_analysis(...)
-
+                    
+                    # --- Summary (robust to DataFrame OR string) ---
                     st.markdown("---")
                     st.subheader("📊 Sensitivity Summary")
                     
                     summary = getattr(dml_plr, "sensitivity_summary", None)
                     
+                    if isinstance(summary, pd.DataFrame):
+                        st.dataframe(summary, use_container_width=True)
+                    elif isinstance(summary, (dict, list)):
+                        st.dataframe(pd.DataFrame(summary), use_container_width=True)
+                    elif summary is not None:
+                        # Pretty-printed text report from some DoubleML versions
+                        st.markdown(f"```text\n{summary}\n```")
+                    else:
+                        st.info("No sensitivity summary was returned by DoubleML.")
+                                        
                 
                     # Visualization
                     st.markdown("---")
