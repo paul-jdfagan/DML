@@ -830,6 +830,8 @@ elif step == "4️⃣ Sensitivity Analysis":
                     st.success("✅ Sensitivity analysis complete!")
                     
                     # Display Summary
+                   # After running: dml_plr.sensitivity_analysis(...)
+
                     st.markdown("---")
                     st.subheader("📊 Sensitivity Summary")
                     
@@ -837,13 +839,36 @@ elif step == "4️⃣ Sensitivity Analysis":
                     
                     if isinstance(summary, pd.DataFrame):
                         st.dataframe(summary, use_container_width=True)
+                    
+                        # 📝 Interpretation ONLY when summary is a DataFrame
+                        st.subheader("📝 Interpretation")
+                        theta_lower = summary['theta_lower'].iloc[0]
+                        theta_upper = summary['theta_upper'].iloc[0]
+                        ci_lower = summary['ci_lower'].iloc[0]
+                        ci_upper = summary['ci_upper'].iloc[0]
+                    
+                        st.write(f"""
+                        Given unobserved confounding with:
+                        - **cf_y = {cf_y:.4f}** (explains {cf_y*100:.2f}% of outcome variance)
+                        - **cf_d = {cf_d:.4f}** (explains {cf_d*100:.2f}% of treatment variance)
+                        - **ρ = {rho:.2f}**
+                        The causal effect estimate would be bounded between **{theta_lower:.4f}** and **{theta_upper:.4f}**.
+                        """)
+                    
+                        if theta_lower < 0 < theta_upper:
+                            st.warning("⚠️ Zero is within the sensitivity bounds.")
+                        else:
+                            st.success("✅ Zero is outside the sensitivity bounds.")
+                    
                     elif isinstance(summary, (dict, list)):
                         st.dataframe(pd.DataFrame(summary), use_container_width=True)
+                        st.info("Displayed a non-DataFrame summary; numeric interpretation skipped.")
                     elif summary is not None:
-                        # It’s a string (pretty-printed report) — render as text, not a table
+                        # Pretty-printed string report from some DoubleML versions
                         st.markdown(f"```text\n{summary}\n```")
+                        st.info("This DoubleML version returns a text report; numeric interpretation skipped.")
                     else:
-                        st.info("No sensitivity summary was returned by DoubleML.")
+                        st.info("No sensitivity summary was returned.")
                     
                     # Interpretation
                     st.subheader("📝 Interpretation")
