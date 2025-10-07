@@ -720,257 +720,36 @@ elif step == "3️⃣ Run Analysis":
                     status_text.empty()
 
 # Step 4: Sensitivity Analysis
-elif step == "4️⃣ Sensitivity Analysis":
-    st.header("Step 4: Sensitivity Analysis")
-
-    if st.session_state.results is None:
-        st.warning("⚠️ Please run the analysis first (Step 3)")
-    else:
-        dml_plr = st.session_state.results['dml_plr']
-
-        st.info("""
-        📊 **Sensitivity Analysis** assesses how robust your causal estimates are to potential **unobserved confounding**.
-
-        Even after controlling for observed confounders, there may be unmeasured variables that affect both treatment and outcome.
-        This analysis shows how strong such confounding would need to be to change your conclusions.
-        """)
-
-        # Sensitivity Parameters
-        st.subheader("🎛️ Sensitivity Parameters")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            cf_y = st.number_input(
-                "Partial R² with outcome (cf_y)",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.05,
-                step=0.01,
-                format="%.4f",
-                help="Strength of association between unobserved confounder and outcome (0-1)"
-            )
-
-            st.caption("💡 Represents how much of the outcome variance the unobserved confounder explains")
-
-        with col2:
-            cf_d = st.number_input(
-                "Partial R² with treatment (cf_d)",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.05,
-                step=0.01,
-                format="%.4f",
-                help="Strength of association between unobserved confounder and treatment (0-1)"
-            )
-
-            st.caption("💡 Represents how much of the treatment variance the unobserved confounder explains")
-
-        col3, col4 = st.columns(2)
-
-        with col3:
-            rho = st.slider(
-                "Correlation (ρ)",
-                min_value=-1.0,
-                max_value=1.0,
-                value=1.0,
-                step=0.1,
-                help="Correlation between confounding effects on outcome and treatment"
-            )
-
-        with col4:
-            level = st.slider(
-                "Confidence Level",
-                min_value=0.80,
-                max_value=0.99,
-                value=0.95,
-                step=0.01,
-                format="%.2f"
-            )
-
-        # Preset scenarios
-        st.subheader("📋 Preset Scenarios")
-
-        scenario = st.selectbox(
-            "Or choose a preset scenario:",
-            ["Custom", "Weak Confounding", "Moderate Confounding", "Strong Confounding", "Extreme Confounding"]
-        )
-
-        if scenario == "Weak Confounding":
-            cf_y, cf_d = 0.01, 0.01
-        elif scenario == "Moderate Confounding":
-            cf_y, cf_d = 0.05, 0.05
-        elif scenario == "Strong Confounding":
-            cf_y, cf_d = 0.10, 0.10
-        elif scenario == "Extreme Confounding":
-            cf_y, cf_d = 0.20, 0.20
-
-        # Benchmarking
-        st.markdown("---")
-        st.subheader("📊 Benchmarking Against Observed Variables")
-
-        st.write("""
-        Compare the sensitivity parameters to observed confounders to understand what level of
-        unobserved confounding would be needed to overturn your results.
-        """)
-
-        available_vars = st.session_state.results['confounder_cols']
-
-        if available_vars:
-            benchmark_vars = st.multiselect(
-                "Select variables to use as benchmarks:",
-                available_vars,
-                default=available_vars[:min(3, len(available_vars))],
-                help="These variables will be used to calibrate the sensitivity analysis"
-            )
-        else:
-            st.warning("⚠️ No confounding variables available for benchmarking")
-            benchmark_vars = []
-
-        # Run Analysis Button
-        st.markdown("---")
-
-        if st.button("🔍 Run Sensitivity Analysis", type="primary", use_container_width=True):
-            with st.spinner("Running sensitivity analysis..."):
-                try:
-                    # Run sensitivity analysis
-                    dml_plr.sensitivity_analysis(cf_y=cf_y, cf_d=cf_d, rho=rho, level=level)
-
-                    st.success("✅ Sensitivity analysis complete!")
-
-                    # Display Summary
-                    st.markdown("---")
-                    st.subheader("📊 Sensitivity Summary")
-
-                    st.dataframe(dml_plr.sensitivity_summary, use_container_width=True)
-
-                    # Interpretation
-                    st.subheader("📝 Interpretation")
-
-                    theta_lower = dml_plr.sensitivity_summary['theta_lower'].iloc[0]
-                    theta_upper = dml_plr.sensitivity_summary['theta_upper'].iloc[0]
-                    ci_lower = dml_plr.sensitivity_summary['ci_lower'].iloc[0]
-                    ci_upper = dml_plr.sensitivity_summary['ci_upper'].iloc[0]
-
-                    st.write(f"""
-                    Given unobserved confounding with:
-                    - **cf_y = {cf_y:.4f}** (explains {cf_y*100:.2f}% of outcome variance)
-                    - **cf_d = {cf_d:.4f}** (explains {cf_d*100:.2f}% of treatment variance)
-                    - **ρ = {rho:.2f}** (correlation between confounding effects)
-
-                    The causal effect estimate would be bounded between **{theta_lower:.4f}** and **{theta_upper:.4f}**.
-                    """)
-
-                    # Check if zero is in bounds
-                    if theta_lower < 0 < theta_upper:
-                        st.warning("⚠️ **Zero is within the sensitivity bounds**, suggesting the effect could be overturned by unobserved confounding of this magnitude.")
-                    else:
-                        st.success("✅ **Zero is not within the sensitivity bounds**, suggesting the effect is robust to this level of unobserved confounding.")
-
-                    # Visualization
-                    st.markdown("---")
-                    st.subheader("📈 Sensitivity Plots")
-
-                    tab1, tab2 = st.tabs(["Effect Bounds (θ)", "Confidence Interval Bounds"])
-
-                    with tab1:
-                        st.write("Shows how the point estimate changes with different levels of confounding")
-                        fig_theta = dml_plr.sensitivity_plot(value='theta')
-                        st.pyplot(fig_theta)
-
-                        st.caption("""
-                        The plot shows the estimated causal effect across different values of confounding strength.
-                        The shaded region represents the sensitivity bounds.
-                        """)
-
-                    with tab2:
-                        st.write(f"Shows how the {level*100:.0f}% confidence interval changes with different levels of confounding")
-                        fig_ci = dml_plr.sensitivity_plot(value='ci', level=level)
-                        st.pyplot(fig_ci)
-
-                        st.caption("""
-                        The plot shows the confidence interval bounds across different values of confounding strength.
-                        If the bounds cross zero, the effect becomes statistically insignificant.
-                        """)
-
-                    # Benchmarking Results
-                    if benchmark_vars:
-                        st.markdown("---")
-                        st.subheader("🎯 Benchmarking Results")
-
-                        st.write("""
-                        These results compare the sensitivity parameters to observed confounders,
-                        helping you understand what "strength" of unobserved confounding would be needed.
-                        """)
-
-                        for var in benchmark_vars:
-                            with st.expander(f"📊 Benchmark: **{var}**"):
-                                try:
-                                    bench_result = dml_plr.sensitivity_benchmark(benchmarking_set=[var])
-
-                                    if isinstance(bench_result, dict):
-                                        st.write("**Benchmark Parameters:**")
-                                        for key, value in bench_result.items():
-                                            st.write(f"- {key}: {value}")
-                                    else:
-                                        st.write(bench_result)
-
-                                    st.info(f"""
-                                    This shows the confounding strength of **{var}**.
-                                    If unobserved confounding is similar in strength to **{var}**,
-                                    these would be the sensitivity parameters.
-                                    """)
-
-                                except Exception as e:
-                                    st.error(f"Error benchmarking {var}: {str(e)}")
-
-                    # Additional Insights
-                    st.markdown("---")
-                    st.subheader("💡 Key Insights")
-
-                    with st.expander("🤔 How to interpret these results"):
-                        st.markdown("""
-                        **Sensitivity Analysis Guidelines:**
-
-                        1. **Small cf_y and cf_d values (< 0.05)**: Your results are robust to weak unobserved confounding
-                        2. **Moderate values (0.05 - 0.15)**: Results require careful interpretation
-                        3. **Large values (> 0.15)**: Results are sensitive to unobserved confounding
-
-                        **Benchmarking helps you answer:**
-                        - "How strong would an unobserved confounder need to be compared to my observed confounders?"
-                        - "Is it plausible that such a confounder exists in my context?"
-
-                        **Best practices:**
-                        - Compare cf_y and cf_d to R² values from your observed confounders
-                        - Consider domain knowledge about potential unobserved confounders
-                        - Report sensitivity results alongside main estimates
-                        - If results are sensitive, consider collecting additional covariates
-                        """)
-
-                    with st.expander("📚 Learn More"):
-                        st.markdown("""
-                        **Resources:**
-                        - [DoubleML Documentation](https://docs.doubleml.org/)
-                        - Chernozhukov et al. (2018): "Double/debiased machine learning for treatment and structural parameters"
-                        - Cinelli & Hazlett (2020): "Making sense of sensitivity: Extending omitted variable bias"
-
-                        **Citation:**
-                        If you use this tool in research, please cite the DoubleML package and relevant methodology papers.
-                        """)
-
-                except Exception as e:
-                    st.error(f"❌ Error during sensitivity analysis: {str(e)}")
-                    st.exception(e)
-
-# Footer
+# Display Summary
 st.markdown("---")
-st.markdown(
-    """
-    <div style='text-align: center; color: #666;'>
-        <p><strong>Generic DoubleML Causal Analysis Tool</strong></p>
-        <p>Built with Streamlit | Powered by DoubleML & FLAML</p>
-        <p style='font-size: 0.9em;'>Support for Marketing, Healthcare, Policy, Finance & More</p>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+st.subheader("📊 Sensitivity Summary")
+
+summary = getattr(dml_plr, "sensitivity_summary", None)
+
+if isinstance(summary, pd.DataFrame):
+    st.dataframe(summary, use_container_width=True)
+
+    # Interpretation (only when tabular data is available)
+    st.subheader("📝 Interpretation")
+    theta_lower = summary['theta_lower'].iloc[0]
+    theta_upper = summary['theta_upper'].iloc[0]
+    ci_lower = summary['ci_lower'].iloc[0]
+    ci_upper = summary['ci_upper'].iloc[0]
+
+    st.write(f"""
+    Given unobserved confounding with:
+    - **cf_y = {cf_y:.4f}** (explains {cf_y*100:.2f}% of outcome variance)
+    - **cf_d = {cf_d:.4f}** (explains {cf_d*100:.2f}% of treatment variance)
+    - **ρ = {rho:.2f}** (correlation between confounding effects)
+
+    The causal effect estimate would be bounded between **{theta_lower:.4f}** and **{theta_upper:.4f}**.
+    """)
+
+    if theta_lower < 0 < theta_upper:
+        st.warning("⚠️ **Zero is within the sensitivity bounds**, suggesting the effect could be overturned by unobserved confounding of this magnitude.")
+    else:
+        st.success("✅ **Zero is not within the sensitivity bounds**, suggesting the effect is robust to this level of unobserved confounding.")
+
+else:
+    # Some DoubleML versions return a pretty-printed string instead of a DataFrame
+    st.markdown("```text\n" + str(summary) + "\n```")
