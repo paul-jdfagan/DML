@@ -721,6 +721,15 @@ elif step == "4️⃣ Sensitivity Analysis":
         # Assuming the dml_plr object is stored in st.session_state.results['dml_plr']
         dml_plr = st.session_state.results['dml_plr']
 
+         # ===================== INSERT A: begin =====================
+        # Ensure a treatment name exists (prevents 'undefined' in plot titles)
+        treatment_from_app = st.session_state.results.get('treatment_var_name', None)
+        if getattr(dml_plr, "d_cols", None) and len(dml_plr.d_cols) > 0:
+            treatment_names = list(dml_plr.d_cols)
+        else:
+            treatment_names = [treatment_from_app or "treatment"]
+            dml_plr.d_cols = treatment_names  # set for plotting/title consistency
+
         # --- Helper: render whatever DoubleML returns (Plotly or Matplotlib) ---
         try:
             import plotly.graph_objs as go
