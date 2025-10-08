@@ -1024,9 +1024,8 @@ st.markdown("---")
 st.markdown(
     """
     <div style='text-align: center; color: #666;'>
-        <p><strong>Generic DoubleML Causal Analysis Tool</strong></p>
+        <p><strong> DoubleML Causal Analysis Tool</strong></p>
         <p>Built by Growth by Science | Powered by DoubleML & FLAML</p>
-        <p style='font-size: 0.9em;'>Support for Marketing, Healthcare, Policy, Finance & More</p>
     </div>
     """,
     unsafe_allow_html=True
