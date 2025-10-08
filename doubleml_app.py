@@ -726,7 +726,6 @@ elif step == "4️⃣ Sensitivity Analysis":
         st.warning("⚠️ Please run the causal analysis first (Step 3)")
         st.info("The sensitivity analysis tests how robust your results are to **unobserved confounding**.")
     else:
-        # Assuming the dml_plr object is stored in st.session_state.results['dml_plr']
         dml_plr = st.session_state.results['dml_plr']
 
         # Ensure a treatment name exists (prevents 'undefined' in titles/labels)
@@ -749,11 +748,9 @@ elif step == "4️⃣ Sensitivity Analysis":
         import matplotlib.pyplot as plt
 
         def _render_doubleml_plot(plot_obj):
-            # Plotly Figure?
             if _PlotlyFigure and isinstance(plot_obj, _PlotlyFigure):
                 st.plotly_chart(plot_obj, use_container_width=True)
                 return
-            # Matplotlib Figure?
             if isinstance(plot_obj, _MplFigure) or hasattr(plot_obj, "savefig"):
                 fig = plot_obj
                 try:
@@ -763,7 +760,6 @@ elif step == "4️⃣ Sensitivity Analysis":
                 st.pyplot(fig)
                 plt.close(fig)
                 return
-            # Matplotlib Axes?
             if isinstance(plot_obj, _MplAxes) and hasattr(plot_obj, "figure"):
                 fig = plot_obj.figure
                 try:
@@ -773,7 +769,6 @@ elif step == "4️⃣ Sensitivity Analysis":
                 st.pyplot(fig)
                 plt.close(fig)
                 return
-            # None (drawn on current figure)?
             fig = plt.gcf()
             if isinstance(fig, _MplFigure):
                 try:
@@ -787,7 +782,6 @@ elif step == "4️⃣ Sensitivity Analysis":
 
         st.info("""
         📊 **Sensitivity Analysis** assesses how robust your causal estimates are to potential **unobserved confounding**.
-        
         Even after controlling for observed confounders, there may be unmeasured variables that affect both treatment and outcome.
         This analysis shows how strong such confounding would need to be to change your conclusions.
         """)
@@ -795,67 +789,55 @@ elif step == "4️⃣ Sensitivity Analysis":
         # Sensitivity Parameters
         st.subheader("🎛️ Sensitivity Parameters")
 
-        # Initialize default values in a robust way
+        # Initialize default values
         default_cf_y = st.session_state.get('cf_y', 0.05)
         default_cf_d = st.session_state.get('cf_d', 0.05)
         default_rho = st.session_state.get('rho', 1.0)
         default_level = st.session_state.get('level', 0.95)
 
         col1, col2 = st.columns(2)
-
         with col1:
             cf_y = st.number_input(
                 "Partial R² with outcome (cf_y)",
-                min_value=0.0,
-                max_value=1.0,
-                value=default_cf_y,
-                step=0.01,
-                format="%.4f",
+                min_value=0.0, max_value=1.0, value=default_cf_y,
+                step=0.01, format="%.4f",
                 help="Strength of association between unobserved confounder and outcome (0-1)"
             )
-            st.caption("💡 Represents how much of the outcome variance the unobserved confounder explains")
-
+            st.caption("Represents how much of the outcome residual variance the unobserved confounder explains")
         with col2:
             cf_d = st.number_input(
                 "Partial R² with treatment (cf_d)",
-                min_value=0.0,
-                max_value=1.0,
-                value=default_cf_d,
-                step=0.01,
-                format="%.4f",
+                min_value=0.0, max_value=1.0, value=default_cf_d,
+                step=0.01, format="%.4f",
                 help="Strength of association between unobserved confounder and treatment (0-1)"
             )
-            st.caption("💡 Represents how much of the treatment variance the unobserved confounder explains")
+            st.caption("Represents how much of the treatment residual variance the unobserved confounder explains")
 
         col3, col4 = st.columns(2)
-
         with col3:
             rho = st.slider(
-                "Correlation (ρ)",
-                min_value=-1.0,
-                max_value=1.0,
-                value=default_rho,
-                step=0.1,
+                "Correlation (ρ)", min_value=-1.0, max_value=1.0, value=default_rho, step=0.1,
                 help="Correlation between confounding effects on outcome and treatment"
             )
-
         with col4:
             level = st.slider(
-                "Confidence Level",
-                min_value=0.80,
-                max_value=0.99,
-                value=default_level,
-                step=0.01,
-                format="%.2f"
+                "Confidence Level", min_value=0.80, max_value=0.99, value=default_level, step=0.01, format="%.2f"
             )
 
-        # Store current values for persistence
+        # Optional null hypothesis (used by tutorial for RV/RVa and which CI bound matters)
+        st.subheader("Null hypothesis (for RV / RVa)")
+        null_hyp = st.number_input(
+            "H₀ (null hypothesis for θ)", value=0.0, step=0.1,
+            help="Used for robustness values and the CI-bound plot. Tutorial uses 0.0 by default; can be set to θ."
+        )
+
+        # Persist
         st.session_state.cf_y = cf_y
         st.session_state.cf_d = cf_d
         st.session_state.rho = rho
         st.session_state.level = level
 
-        # Preset scenarios
+        # Preset scenarios (these will be most-used; make sure we visualize them)
         st.subheader("📋 Preset Scenarios")
         scenario = st.selectbox(
             "Or choose a preset scenario:",
@@ -873,10 +855,7 @@ elif step == "4️⃣ Sensitivity Analysis":
         # Benchmarking
         st.markdown("---")
         st.subheader("📊 Benchmarking Against Observed Variables")
-        st.write("""
-        Compare the sensitivity parameters to observed confounders to understand what level of 
-        unobserved confounding would be needed to overturn your results.
-        """)
+        st.write("Compare sensitivity parameters to observed confounders to calibrate plausible unobserved confounding.")
         available_vars = st.session_state.results.get('confounder_cols', [])
         if available_vars:
             default_benchmarks = st.session_state.get('benchmark_vars', available_vars[:min(3, len(available_vars))])
@@ -896,8 +875,8 @@ elif step == "4️⃣ Sensitivity Analysis":
         if st.button("🔍 Run Sensitivity Analysis", type="primary", use_container_width=True):
             with st.spinner("Running sensitivity analysis..."):
                 try:
-                    # 1) Run sensitivity analysis for chosen parameters
-                    dml_plr.sensitivity_analysis(cf_y=cf_y, cf_d=cf_d, rho=rho, level=level)
+                    # 1) Run sensitivity analysis for chosen parameters (include null hypothesis)
+                    dml_plr.sensitivity_analysis(cf_y=cf_y, cf_d=cf_d, rho=rho, level=level, null_hypothesis=null_hyp)
                     st.success("✅ Sensitivity analysis complete!")
 
                     # 2) Sensitivity Summary
@@ -929,46 +908,50 @@ elif step == "4️⃣ Sensitivity Analysis":
                         else:
                             st.info("No sensitivity summary was returned by DoubleML.")
 
-                    # 3) Plots
+                    # 3) Plots with the scenario marker (benchmarks argument)
                     st.markdown("---")
                     st.subheader("📈 Sensitivity Plots")
                     tab1, tab2 = st.tabs(["Effect Bounds (θ)", "Confidence Interval Bounds"])
-                    st.caption(f"Treatment: `{treatment_names[0]}`")
+
+                    treatment_label = (
+                        treatment_names[0]
+                        if isinstance(treatment_names, (list, tuple)) and len(treatment_names) > 0
+                        else st.session_state.variable_config.get('treatment_col', 'treatment')
+                    )
+                    st.caption(f"Treatment: `{treatment_label}`")
+
+                    # Build scenario benchmark dict to visually mark the chosen scenario (preset or custom)
+                    scenario_bench = {
+                        "cf_y": [cf_y],
+                        "cf_d": [cf_d],
+                        "name": [f"{scenario.lower()} (ρ={rho:.2f})" if scenario != "Custom" else f"scenario (ρ={rho:.2f})"]
+                    }
 
                     with tab1:
                         st.write("Shows how the **point estimate** changes with different levels of confounding:")
                         plt.close('all')
-                        obj_theta = dml_plr.sensitivity_plot(value='theta')
+                        obj_theta = dml_plr.sensitivity_plot(value='theta', benchmarks=scenario_bench)
                         _render_doubleml_plot(obj_theta)
-                        st.caption("The plot shows the estimated causal effect across different values of confounding strength. The shaded region represents the sensitivity bounds.")
+                        st.caption("Surface shows θ adjusted for unobserved confounding; the marker is your current scenario.")
 
                     with tab2:
                         st.write(f"Shows how the **{level*100:.0f}% confidence interval** changes with different levels of confounding:")
                         plt.close('all')
-                        obj_ci = dml_plr.sensitivity_plot(value='ci', level=level)
+                        obj_ci = dml_plr.sensitivity_plot(value='ci', level=level, benchmarks=scenario_bench)
                         _render_doubleml_plot(obj_ci)
-                        st.caption("The plot shows the confidence interval bounds across different values of confounding strength. The line where the lower bound crosses zero indicates the confounding needed to make the effect insignificant.")
+                        st.caption("Where the lower bound crosses the null indicates the confounding needed to render the effect insignificant.")
 
-                    # 4) Optional benchmarking
+                    # 4) Optional benchmarking against observed covariates
                     if benchmark_vars:
                         st.markdown("---")
                         st.subheader("🎯 Benchmarking Results")
-                        st.write("""
-                        These results compare the sensitivity parameters to observed confounders,
-                        helping you understand what "strength" of unobserved confounding would be needed.
-                        """)
+                        st.write("These results compare the sensitivity parameters to observed confounders.")
 
-                        # Get the stored models and data from session state
                         best_estimator_l = st.session_state.results.get('best_estimator_l')
                         best_estimator_m = st.session_state.results.get('best_estimator_m')
-                        x_cols = st.session_state.results.get('x_cols_for_benchmark', [])
 
-                        # Create a new DoubleML object with real estimators for benchmarking
                         try:
-                            # Use the same data that was used for fitting
                             dml_data_for_bench = dml_plr._dml_data
-
-                            # Wrapper classes for FLAML models
                             from sklearn.base import BaseEstimator, RegressorMixin
 
                             class FLAMLWrapper(BaseEstimator, RegressorMixin):
@@ -976,24 +959,20 @@ elif step == "4️⃣ Sensitivity Analysis":
                                     self.flaml_estimator_name = flaml_estimator_name
                                     self.time_budget = time_budget
                                     self.model_ = None
-
                                 def fit(self, X, y):
                                     automl = AutoML()
                                     automl.fit(
                                         X_train=X, y_train=y,
-                                        task="regression",
-                                        metric="rmse",
+                                        task="regression", metric="rmse",
                                         time_budget=self.time_budget,
                                         estimator_list=[self.flaml_estimator_name],
                                         verbose=0
                                     )
                                     self.model_ = automl
                                     return self
-
                                 def predict(self, X):
                                     return self.model_.predict(X)
 
-                            # New DoubleML object for benchmarking
                             ml_l_bench = FLAMLWrapper(best_estimator_l, time_budget=30)
                             ml_m_bench = FLAMLWrapper(best_estimator_m, time_budget=30)
 
@@ -1002,20 +981,17 @@ elif step == "4️⃣ Sensitivity Analysis":
                                 ml_l=ml_l_bench,
                                 ml_m=ml_m_bench,
                                 n_folds=st.session_state.variable_config['n_folds'],
-                                n_rep=1,  # simple for benchmarking
+                                n_rep=1,
                                 score=st.session_state.variable_config['score_type']
                             )
 
-                            # Fit the benchmark model
                             with st.spinner("Fitting benchmark model (this may take a moment)..."):
                                 dml_plr_bench.fit()
 
-                            # Run benchmarking on each variable
                             for var in benchmark_vars:
                                 with st.expander(f"📊 Benchmark: **{var}**"):
                                     try:
                                         bench_result = dml_plr_bench.sensitivity_benchmark(benchmarking_set=[var])
-
                                         if hasattr(bench_result, 'to_frame'):
                                             st.dataframe(bench_result.to_frame().T, use_container_width=True)
                                         elif isinstance(bench_result, dict):
@@ -1027,24 +1003,15 @@ elif step == "4️⃣ Sensitivity Analysis":
                                                     st.write(f"- **{key}**: `{value}`")
                                         else:
                                             st.write(bench_result)
-
-                                        st.info(f"""
-                                        This shows the confounding strength of **{var}**. 
-                                        If unobserved confounding is similar in strength to **{var}**, 
-                                        these would be the sensitivity parameters (cf_y and cf_d).
-                                        """)
+                                        st.info(f"If unobserved confounding is similar in strength to **{var}**, these would be the implied cf_y and cf_d.")
                                     except Exception as e:
-                                        st.error(f"Error benchmarking {var}: {str(e)}")
+                                        st.error(f"Error benchmarking {var}: {e}")
 
                         except Exception as e:
                             st.warning(f"⚠️ Unable to run benchmarking: {str(e)}")
                             st.info("""
-                            **Note:** Benchmarking requires refitting the model with actual ML learners, 
-                            which can be computationally expensive. The sensitivity analysis above still 
-                            provides valuable insights about robustness to unobserved confounding.
-                            
-                            **Alternative approach:** You can manually compare the cf_y and cf_d values 
-                            to the R² values of your observed confounders from the original model fits.
+                            Benchmarking requires refitting with actual learners and can be expensive.
+                            You can also compare cf_y/cf_d to the R² of observed confounders from the nuisance models.
                             """)
 
                 except Exception as e:
