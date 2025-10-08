@@ -953,7 +953,7 @@ elif step == "4️⃣ Sensitivity Analysis":
                         _render_doubleml_plot(obj_ci)
                         st.caption("The plot shows the confidence interval bounds across different values of confounding strength. The line where the lower bound crosses zero indicates the confounding needed to make the effect insignificant.")
 
-                    # Benchmarking Results
+                      # Benchmarking Results
                     if benchmark_vars:
                         st.markdown("---")
                         st.subheader("🎯 Benchmarking Results")
@@ -961,65 +961,96 @@ elif step == "4️⃣ Sensitivity Analysis":
                         These results compare the sensitivity parameters to observed confounders,
                         helping you understand what "strength" of unobserved confounding would be needed.
                         """)
-                        for var in benchmark_vars:
-                            with st.expander(f"📊 Benchmark: **{var}**"):
-                                try:
-                                    bench_result = dml_plr.sensitivity_benchmark(benchmarking_set=[var])
-                                    if hasattr(bench_result, 'to_frame'):
-                                        st.dataframe(bench_result.to_frame().T, use_container_width=True)
-                                    elif isinstance(bench_result, dict):
-                                        st.write("**Benchmark Parameters:**")
-                                        for key, value in bench_result.items():
-                                            try:
-                                                st.write(f"- **{key}**: `{float(value):.4f}`")
-                                            except Exception:
-                                                st.write(f"- **{key}**: `{value}`")
-                                    else:
-                                        st.write(bench_result)
-                                    st.info(f"""
-                                    This shows the confounding strength of **{var}**. 
-                                    If unobserved confounding is similar in strength to **{var}**, 
-                                    these would be the sensitivity parameters (cf_y and cf_d).
-                                    """)
-                                except Exception as e:
-                                    st.error(f"Error benchmarking {var}: {str(e)}")
-                    
-                    # Additional Insights
-                    st.markdown("---")
-                    st.subheader("💡 Key Insights")
-                    with st.expander("🤔 How to interpret these results"):
-                        st.markdown("""
-                        **Sensitivity Analysis Guidelines:**
                         
-                        1. **Small cf_y and cf_d values (< 0.05)**: Your results are robust to weak unobserved confounding
-                        2. **Moderate values (0.05 - 0.15)**: Results require careful interpretation
-                        3. **Large values (> 0.15)**: Results are sensitive to unobserved confounding
+                        # Get the stored models and data from session state
+                        best_estimator_l = st.session_state.results.get('best_estimator_l')
+                        best_estimator_m = st.session_state.results.get('best_estimator_m')
+                        x_cols = st.session_state.results.get('x_cols_for_benchmark', [])
                         
-                        **Benchmarking helps you answer:**
-                        - "How strong would an unobserved confounder need to be compared to my observed confounders?"
-                        - "Is it plausible that such a confounder exists in my context?"
+                        # Create a new DoubleML object with real estimators for benchmarking
+                        try:
+                            # We need to create a fresh DoubleML object with actual ML learners
+                            # Use the same data that was used for fitting
+                            dml_data_for_bench = dml_plr._dml_data
+                            
+                            # Create wrapper classes for FLAML models
+                            from sklearn.base import BaseEstimator, RegressorMixin
+                            
+                            class FLAMLWrapper(BaseEstimator, RegressorMixin):
+                                def __init__(self, flaml_estimator_name, time_budget=60):
+                                    self.flaml_estimator_name = flaml_estimator_name
+                                    self.time_budget = time_budget
+                                    self.model_ = None
+                                
+                                def fit(self, X, y):
+                                    automl = AutoML()
+                                    automl.fit(
+                                        X_train=X, y_train=y,
+                                        task="regression", 
+                                        metric="rmse",
+                                        time_budget=self.time_budget,
+                                        estimator_list=[self.flaml_estimator_name],
+                                        verbose=0
+                                    )
+                                    self.model_ = automl
+                                    return self
+                                
+                                def predict(self, X):
+                                    return self.model_.predict(X)
+                            
+                            # Create new DoubleML object for benchmarking
+                            ml_l_bench = FLAMLWrapper(best_estimator_l, time_budget=30)
+                            ml_m_bench = FLAMLWrapper(best_estimator_m, time_budget=30)
+                            
+                            dml_plr_bench = dml.DoubleMLPLR(
+                                dml_data_for_bench,
+                                ml_l=ml_l_bench,
+                                ml_m=ml_m_bench,
+                                n_folds=st.session_state.variable_config['n_folds'],
+                                n_rep=1,  # Keep it simple for benchmarking
+                                score=st.session_state.variable_config['score_type']
+                            )
+                            
+                            # Fit the benchmark model
+                            with st.spinner("Fitting benchmark model (this may take a moment)..."):
+                                dml_plr_bench.fit()
+                            
+                            # Now run benchmarking on each variable
+                            for var in benchmark_vars:
+                                with st.expander(f"📊 Benchmark: **{var}**"):
+                                    try:
+                                        bench_result = dml_plr_bench.sensitivity_benchmark(benchmarking_set=[var])
+                                        
+                                        if hasattr(bench_result, 'to_frame'):
+                                            st.dataframe(bench_result.to_frame().T, use_container_width=True)
+                                        elif isinstance(bench_result, dict):
+                                            st.write("**Benchmark Parameters:**")
+                                            for key, value in bench_result.items():
+                                                try:
+                                                    st.write(f"- **{key}**: `{float(value):.4f}`")
+                                                except Exception:
+                                                    st.write(f"- **{key}**: `{value}`")
+                                        else:
+                                            st.write(bench_result)
+                                        
+                                        st.info(f"""
+                                        This shows the confounding strength of **{var}**. 
+                                        If unobserved confounding is similar in strength to **{var}**, 
+                                        these would be the sensitivity parameters (cf_y and cf_d).
+                                        """)
+                                    except Exception as e:
+                                        st.error(f"Error benchmarking {var}: {str(e)}")
                         
-                        **Best practices:**
-                        - Compare cf_y and cf_d to R² values from your observed confounders
-                        - Consider domain knowledge about potential unobserved confounders
-                        - Report sensitivity results alongside main estimates
-                        - If results are sensitive, consider collecting additional covariates
-                        """)
-                    
-                    with st.expander("📚 Learn More"):
-                        st.markdown("""
-                        **Resources:**
-                        - [DoubleML Documentation](https://docs.doubleml.org/)
-                        - Chernozhukov et al. (2018): "Double/debiased machine learning for treatment and structural parameters"
-                        - Cinelli & Hazlett (2020): "Making sense of sensitivity: Extending omitted variable bias"
-                        
-                        **Citation:**
-                        If you use this tool in research, please cite the DoubleML package and relevant methodology papers.
-                        """)
-                    
-                except Exception as e:
-                    st.error(f"❌ Error during sensitivity analysis: {str(e)}")
-                    st.exception(e)
+                        except Exception as e:
+                            st.warning(f"⚠️ Unable to run benchmarking: {str(e)}")
+                            st.info("""
+                            **Note:** Benchmarking requires refitting the model with actual ML learners, 
+                            which can be computationally expensive. The sensitivity analysis above still 
+                            provides valuable insights about robustness to unobserved confounding.
+                            
+                            **Alternative approach:** You can manually compare the cf_y and cf_d values 
+                            to the R² values of your observed confounders from the original model fits.
+                            """)
 
 
 # Footer
