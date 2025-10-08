@@ -953,7 +953,7 @@ elif step == "4️⃣ Sensitivity Analysis":
                         _render_doubleml_plot(obj_ci)
                         st.caption("The plot shows the confidence interval bounds across different values of confounding strength. The line where the lower bound crosses zero indicates the confounding needed to make the effect insignificant.")
 
-                      # Benchmarking Results
+                    # Benchmarking Results
                     if benchmark_vars:
                         st.markdown("---")
                         st.subheader("🎯 Benchmarking Results")
