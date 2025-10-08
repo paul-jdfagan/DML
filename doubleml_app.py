@@ -891,26 +891,22 @@ elif step == "4️⃣ Sensitivity Analysis":
             st.warning("⚠️ No confounding variables available for benchmarking")
             benchmark_vars = []
         
-        # Run Analysis Button
-        st.markdown("---")
         if st.button("🔍 Run Sensitivity Analysis", type="primary", use_container_width=True):
             with st.spinner("Running sensitivity analysis..."):
                 try:
                     # Run sensitivity analysis for chosen parameters
                     dml_plr.sensitivity_analysis(cf_y=cf_y, cf_d=cf_d, rho=rho, level=level)
                     st.success("✅ Sensitivity analysis complete!")
-                    
-                    # --- Summary: Build a DataFrame from sensitivity_params (version-proof) ---
+        
+                    # --- Sensitivity Summary ---
                     st.markdown("---")
                     st.subheader("📊 Sensitivity Summary")
-
                     params = getattr(dml_plr, "sensitivity_params", None)
                     if params is not None:
                         try:
                             tname = dml_plr.d_cols[0] if hasattr(dml_plr, "d_cols") else "treatment"
                         except Exception:
                             tname = "treatment"
-
                         row = {
                             "theta lower": float(params["theta"]["lower"][0]),
                             "theta":       float(getattr(dml_plr, "coef", [np.nan])[0]),
@@ -923,7 +919,6 @@ elif step == "4️⃣ Sensitivity Analysis":
                         summary_df = pd.DataFrame([row], index=[tname])
                         st.dataframe(summary_df, use_container_width=True)
                     else:
-                        # Fallback: print whatever summary exists (string or DataFrame)
                         summary = getattr(dml_plr, "sensitivity_summary", None)
                         if isinstance(summary, pd.DataFrame):
                             st.dataframe(summary, use_container_width=True)
@@ -931,21 +926,18 @@ elif step == "4️⃣ Sensitivity Analysis":
                             st.markdown(f"```text\n{summary}\n```")
                         else:
                             st.info("No sensitivity summary was returned by DoubleML.")
-
-                    # --- Plots: Handle Plotly/Mpl/None robustly ---
+        
+                    # --- Plots ---
                     st.markdown("---")
                     st.subheader("📈 Sensitivity Plots")
                     tab1, tab2 = st.tabs(["Effect Bounds (θ)", "Confidence Interval Bounds"])
-
                     st.caption(f"Treatment: `{treatment_names[0]}`")
-
                     with tab1:
                         st.write("Shows how the **point estimate** changes with different levels of confounding:")
                         plt.close('all')
                         obj_theta = dml_plr.sensitivity_plot(value='theta')
                         _render_doubleml_plot(obj_theta)
                         st.caption("The plot shows the estimated causal effect across different values of confounding strength. The shaded region represents the sensitivity bounds.")
-                    
                     with tab2:
                         st.write(f"Shows how the **{level*100:.0f}% confidence interval** changes with different levels of confounding:")
                         plt.close('all')
