@@ -726,24 +726,23 @@ elif step == "4️⃣ Sensitivity Analysis":
         st.warning("⚠️ Please run the causal analysis first (Step 3).")
         st.info("Sensitivity analysis tests robustness to unobserved confounding.")
     else:
-        # Import necessary libraries for this step
         import pandas as pd
         import numpy as np
+        import matplotlib.pyplot as plt
         import doubleml as dml
-        from sklearn.base import BaseEstimator, RegressorMixin
-        from flaml import AutoML
-        
+
         dml_plr = st.session_state.results['dml_plr']
 
-        # Ensure treatment label present for titles/labels
+        # Ensure a treatment label exists for titles/labels
         treatment_from_app = st.session_state.results.get('treatment_var_name', None)
         if getattr(dml_plr, "d_cols", None) and len(dml_plr.d_cols) > 0:
             treatment_names = list(dml_plr.d_cols)
         else:
             treatment_names = [treatment_from_app or "treatment"]
-            dml_plr.d_cols = treatment_names  # align plotting titles
+            dml_plr.d_cols = treatment_names
+        treatment_label = treatment_names[0]
 
-        # ---------- Plot rendering utilities (Plotly / Matplotlib) ----------
+        # ---------- Plot backends ----------
         try:
             import plotly.graph_objs as go
             _PlotlyFigure = go.Figure
@@ -752,9 +751,9 @@ elif step == "4️⃣ Sensitivity Analysis":
 
         from matplotlib.figure import Figure as _MplFigure
         from matplotlib.axes import Axes as _MplAxes
-        import matplotlib.pyplot as plt
 
-        def _render_doubleml_plot(plot_obj):
+        # --- Minimal renderer ---
+        def _render(plot_obj):
             if _PlotlyFigure and isinstance(plot_obj, _PlotlyFigure):
                 st.plotly_chart(plot_obj, use_container_width=True)
                 return
@@ -769,10 +768,10 @@ elif step == "4️⃣ Sensitivity Analysis":
                 return
             st.info("Plot object not recognized; nothing to display.")
 
-        # --- Plot styling to match DoubleML tutorials ---
-        def style_plotly_sensitivity(fig):
+        # --- Plot styling (tutorial look) ---
+        def style_plotly(fig):
             try:
-                import plotly.graph_objs as go
+                import plotly.graph_objs as go  # noqa
                 fig.update_layout(
                     template="plotly_white",
                     font=dict(size=12),
@@ -781,12 +780,12 @@ elif step == "4️⃣ Sensitivity Analysis":
                 )
                 for tr in fig.data:
                     if getattr(tr, "type", "") in ("heatmap", "contour"):
-                        tr.colorscale = "Viridis"
+                        tr.colorscale = "Viridis"  # or "Turbo" if you prefer
                         if getattr(tr, "colorbar", None):
                             tr.colorbar.title = tr.colorbar.title or "θ bound"
                     if getattr(tr, "mode", "") and "markers" in tr.mode:
                         tr.marker.update(size=12, line=dict(width=1.5, color="white"), symbol="x")
-                        if hasattr(tr, "name"):
+                        if hasattr(tr, "name") and getattr(tr, "x", None) is not None:
                             tr.text = [tr.name] * len(tr.x)
                             tr.textposition = "top center"
                             tr.textfont = dict(size=11, color="black")
@@ -794,77 +793,34 @@ elif step == "4️⃣ Sensitivity Analysis":
             except Exception:
                 return fig
 
-        def style_mpl_sensitivity(fig):
-            try:
-                import matplotlib.pyplot as plt
-                for ax in fig.get_axes():
-                    ax.grid(True, alpha=0.25)
-                    for im in ax.get_images():
-                        im.set_cmap("viridis")
-                    for coll in ax.collections:
-                        try:
-                            coll.set_cmap("viridis")
-                        except Exception:
-                            pass
-                    leg = ax.get_legend()
-                    if leg:
-                        leg.get_frame().set_alpha(0.9)
-                        leg.get_frame().set_edgecolor("#cccccc")
-                fig.tight_layout()
-                return fig
-            except Exception:
-                return fig
-        
-        def _style_and_render(plot_obj):
-            if isinstance(plot_obj, _PlotlyFigure):
-                st.plotly_chart(style_plotly_sensitivity(plot_obj), use_container_width=True)
-            elif isinstance(plot_obj, (_MplFigure, _MplAxes)):
-                st.pyplot(style_mpl_sensitivity(plot_obj.figure if isinstance(plot_obj, _MplAxes) else plot_obj))
+        def style_and_render(fig, title_text=None):
+            # Set title if Plotly; if Matplotlib, set suptitle
+            if _PlotlyFigure and isinstance(fig, _PlotlyFigure):
+                if title_text:
+                    fig.update_layout(title=dict(text=title_text, x=0.5, xanchor="center"))
+                _render(style_plotly(fig))
+            elif isinstance(fig, (_MplFigure, _MplAxes)):
+                _fig = fig.figure if isinstance(fig, _MplAxes) else fig
+                if title_text:
+                    try:
+                        _fig.suptitle(title_text)
+                    except Exception:
+                        pass
+                _render(_fig)
             else:
-                _render_doubleml_plot(plot_obj)
+                _render(fig)
 
-        # Helper class for benchmarking - MUST be defined at top level for st.cache to work
-        class FLAMLWrapper(BaseEstimator, RegressorMixin):
-            def __init__(self, flaml_estimator_name="lgbm", time_budget=30):
-                self.flaml_estimator_name = flaml_estimator_name
-                self.time_budget = time_budget
-                self.model_ = None
-            def fit(self, X, y):
-                automl = AutoML()
-                automl.fit(
-                    X_train=X, y_train=y, task="regression", metric="rmse",
-                    time_budget=self.time_budget, estimator_list=[self.flaml_estimator_name], verbose=0
-                )
-                self.model_ = automl
-                return self
-            def predict(self, X):
-                return self.model_.predict(X)
+        st.info("📊 Sensitivity Analysis evaluates how strong unobserved confounding must be to change your conclusion "
+                "(e.g., nullify θ or cross a null bound).")
 
-        @st.cache_data
-        def fit_benchmark_model(_dml_data, best_l, best_m, n_folds, score):
-            ml_l_bench = FLAMLWrapper(best_l, time_budget=30)
-            ml_m_bench = FLAMLWrapper(best_m, time_budget=30)
-            dml_plr_bench = dml.DoubleMLPLR(
-                _dml_data, ml_l=ml_l_bench, ml_m=ml_m_bench,
-                n_folds=n_folds, n_rep=1, score=score
-            )
-            dml_plr_bench.fit(store_predictions=False) # No need to store preds for benchmarking
-            return dml_plr_bench
-
-        st.info(
-            "📊 Sensitivity Analysis evaluates how strong unobserved confounding must be to change your conclusion "
-            "(e.g., nullify θ or cross a null bound)."
-        )
-
-        # ---------- Session-state defaults (previous custom values) ----------
+        # ---------- Session-state defaults ----------
         for key, default in [
             ('last_cf_y', 0.05), ('last_cf_d', 0.05), ('last_rho', 1.0),
             ('last_level', 0.95), ('last_null_hyp', 0.0),
         ]:
-            if key not in st.session_state:
-                st.session_state[key] = default
+            st.session_state.setdefault(key, default)
 
-        # ============= 1) PRESET SCENARIOS FIRST =============
+        # ============= 1) Preset Scenarios (comes first) =============
         st.subheader("📋 Preset Scenarios")
         scenario = st.selectbox(
             "Choose a scenario:",
@@ -872,14 +828,12 @@ elif step == "4️⃣ Sensitivity Analysis":
             key="scenario_select",
             help="Scenario sets defaults for sliders; choose Custom to edit and save your own values."
         )
-
         preset_map = {
             "Weak Confounding": (0.01, 0.01, 1.0, 0.95, 0.0),
             "Moderate Confounding": (0.05, 0.05, 1.0, 0.95, 0.0),
             "Strong Confounding": (0.10, 0.10, 1.0, 0.95, 0.0),
             "Extreme Confounding": (0.20, 0.20, 1.0, 0.95, 0.0),
         }
-
         if scenario == "Custom":
             default_cf_y, default_cf_d, default_rho, default_level, default_null = (
                 st.session_state['last_cf_y'], st.session_state['last_cf_d'],
@@ -889,64 +843,61 @@ elif step == "4️⃣ Sensitivity Analysis":
         else:
             default_cf_y, default_cf_d, default_rho, default_level, default_null = preset_map[scenario]
 
-        # ============= 2) PARAMETER INPUTS AFTER SCENARIO =============
+        # ============= 2) Parameters (after scenario) =============
         st.subheader("🎛️ Parameters")
         col1, col2 = st.columns(2)
         with col1:
-            cf_y = st.number_input("Partial R² with outcome (cf_y)", min_value=0.0, max_value=1.0, value=float(default_cf_y), step=0.01, format="%.4f", key=f"cf_y_input_{scenario}", help="Fraction of outcome residual variance explained by an unobserved confounder.")
+            cf_y = st.number_input("Partial R² with outcome (cf_y)",
+                                   min_value=0.0, max_value=1.0, value=float(default_cf_y),
+                                   step=0.01, format="%.4f", key=f"cf_y_input_{scenario}")
             st.caption("Interpretation: confounder strength on outcome residual.")
         with col2:
-            cf_d = st.number_input("Partial R² with treatment (cf_d)", min_value=0.0, max_value=1.0, value=float(default_cf_d), step=0.01, format="%.4f", key=f"cf_d_input_{scenario}", help="Fraction of treatment residual variance explained by an unobserved confounder.")
+            cf_d = st.number_input("Partial R² with treatment (cf_d)",
+                                   min_value=0.0, max_value=1.0, value=float(default_cf_d),
+                                   step=0.01, format="%.4f", key=f"cf_d_input_{scenario}")
             st.caption("Interpretation: confounder strength on treatment residual.")
-
         col3, col4 = st.columns(2)
         with col3:
-            rho = st.slider("Correlation (ρ) between confounding effects", min_value=-1.0, max_value=1.0, value=float(default_rho), step=0.1, key=f"rho_input_{scenario}", help="Correlation of confounder effects on outcome vs treatment residuals.")
+            rho = st.slider("Correlation (ρ) between confounding effects",
+                            min_value=-1.0, max_value=1.0, value=float(default_rho),
+                            step=0.1, key=f"rho_input_{scenario}")
         with col4:
-            level = st.slider("Confidence Level", min_value=0.80, max_value=0.99, value=float(default_level), step=0.01, format="%.2f", key=f"level_input_{scenario}")
-
+            level = st.slider("Confidence Level",
+                              min_value=0.80, max_value=0.99, value=float(default_level),
+                              step=0.01, format="%.2f", key=f"level_input_{scenario}")
         st.subheader("Null hypothesis (for RV / RVa)")
-        null_hyp = st.number_input("H₀ (null hypothesis for θ)", value=float(default_null), step=0.1, format="%.4f", key=f"null_input_{scenario}", help="Used for robustness values (RV/RVa) and CI-bound plot.")
+        null_hyp = st.number_input("H₀ (null hypothesis for θ)", value=float(default_null),
+                                   step=0.1, format="%.4f", key=f"null_input_{scenario}")
 
         if scenario == "Custom":
-            st.session_state.update(last_cf_y=cf_y, last_cf_d=cf_d, last_rho=rho, last_level=level, last_null_hyp=null_hyp)
+            st.session_state.update(last_cf_y=cf_y, last_cf_d=cf_d, last_rho=rho,
+                                    last_level=level, last_null_hyp=null_hyp)
 
-        # ============= 3) OPTIONAL: Benchmarking choices =============
-        st.markdown("---")
-        st.subheader("📊 Benchmarking Against Observed Variables")
-        st.write("Use observed covariates as calibration reference for plausible cf_y / cf_d.")
-        available_vars = st.session_state.results.get('confounder_cols', [])
-        if available_vars:
-            default_benchmarks = st.session_state.get('benchmark_vars', available_vars[:min(3, len(available_vars))])
-            benchmark_vars = st.multiselect("Select variables to use as benchmarks:", available_vars, default=default_benchmarks, help="Benchmarks help interpret how large your chosen cf_y/cf_d are.")
-            st.session_state.benchmark_vars = benchmark_vars
-        else:
-            st.warning("⚠️ No confounding variables available for benchmarking")
-            benchmark_vars = []
-
-        # ============= 4) RUN =============
+        # ============= 3) Run =============
         st.markdown("---")
         run_col1, run_col2 = st.columns([3, 2])
         with run_col1:
             run_clicked = st.button("🔍 Run Sensitivity Analysis", type="primary", use_container_width=True)
         with run_col2:
-            st.caption(f"Parameters → Scenario: **{scenario}** | cf_y: **{cf_y:.4f}** | cf_d: **{cf_d:.4f}** | ρ: **{rho:.2f}** | Level: **{level:.2f}** | H₀: **{null_hyp:.4f}**")
+            st.caption(f"Parameters → Scenario: **{scenario}** | cf_y: **{cf_y:.4f}** | cf_d: **{cf_d:.4f}** | "
+                       f"ρ: **{rho:.2f}** | Level: **{level:.2f}** | H₀: **{null_hyp:.4f}**")
 
         if run_clicked:
             with st.spinner("Running sensitivity analysis..."):
                 try:
-                    if 'sensitivity_runs' not in st.session_state:
-                        st.session_state.sensitivity_runs = []
-                    st.session_state.sensitivity_runs.append({
-                        "timestamp": pd.Timestamp.utcnow().isoformat(), "scenario": scenario,
-                        "cf_y": float(cf_y), "cf_d": float(cf_d), "rho": float(rho),
-                        "level": float(level), "null_hyp": float(null_hyp)
+                    # keep a simple run log for auditability
+                    st.session_state.setdefault('sensitivity_runs', []).append({
+                        "timestamp": pd.Timestamp.utcnow().isoformat(),
+                        "scenario": scenario, "cf_y": float(cf_y), "cf_d": float(cf_d),
+                        "rho": float(rho), "level": float(level), "null_hyp": float(null_hyp)
                     })
 
-                    dml_plr.sensitivity_analysis(cf_y=cf_y, cf_d=cf_d, rho=rho, level=level, null_hypothesis=null_hyp)
+                    # Run DoubleML sensitivity
+                    dml_plr.sensitivity_analysis(cf_y=cf_y, cf_d=cf_d, rho=rho,
+                                                 level=level, null_hypothesis=null_hyp)
                     st.success("✅ Sensitivity analysis complete!")
 
-                    # ============= 5) SUMMARY DISPLAY =============
+                    # ----- Summary -----
                     st.markdown("---")
                     st.subheader("📊 Sensitivity Summary")
                     try:
@@ -954,67 +905,33 @@ elif step == "4️⃣ Sensitivity Analysis":
                     except Exception:
                         st.info("Summary text unavailable from backend.")
 
-                    # ============= 6) PLOTS WITH SCENARIO BENCHMARK =============
+                    # ----- Plots (with scenario marker) -----
                     st.markdown("---")
                     st.subheader("📈 Sensitivity Plots")
                     tab1, tab2 = st.tabs(["Effect Bounds (θ)", "Confidence Interval Bounds"])
-                    
-                    # --- 🚨 FIX: Create a dictionary for the benchmark ---
-                    # The `benchmarks` parameter in this version expects a dictionary with
-                    # keys 'cf_y', 'cf_d', and 'name'.
+
+                    # EXACT tutorial format: benchmarks is a dict of lists
                     scenario_label = scenario if scenario != "Custom" else "Custom Scenario"
-                    benchmark_name = f"{scenario_label} (ρ={rho:.2f})"
-                    scenario_dict = {
-                        "cf_y": [cf_y],
-                        "cf_d": [cf_d],
-                        "name": [benchmark_name]
-                    }
-                    
+                    bench_name = f"{scenario_label} (ρ={rho:.2f})"
+                    scenario_bench = {"cf_y": [float(cf_y)], "cf_d": [float(cf_d)], "name": [bench_name]}
+
                     with tab1:
-                        st.write("Point estimate θ under varying confounding:")
                         plt.close('all')
-                        # Pass the correctly formatted dictionary
-                        obj_theta = dml_plr.sensitivity_plot(value='theta', benchmarks=scenario_dict)
-                        _style_and_render(obj_theta)
+                        fig_theta = dml_plr.sensitivity_plot(value="theta", benchmarks=scenario_bench)
+                        title1 = f"{treatment_label}: θ bounds under {scenario} (ρ={rho:.2f})"
+                        style_and_render(fig_theta, title_text=title1)
                         st.caption("Marker indicates the current scenario settings.")
-                    
+
                     with tab2:
-                        st.write(f"{int(level*100)}% CI under varying confounding:")
                         plt.close('all')
-                        # Pass the same dictionary here
-                        obj_ci = dml_plr.sensitivity_plot(value='ci', level=level, benchmarks=scenario_dict)
-                        _style_and_render(obj_ci)
+                        fig_ci = dml_plr.sensitivity_plot(value="ci", level=level, benchmarks=scenario_bench)
+                        title2 = f"{treatment_label}: {int(level*100)}% CI bounds under {scenario} (ρ={rho:.2f})"
+                        style_and_render(fig_ci, title_text=title2)
                         st.caption("Where the lower bound crosses H₀ indicates required confounding to nullify the result.")
 
-                    # ============= 7) Optional benchmarking against observed covariates =============
-                    if benchmark_vars:
-                        st.markdown("---")
-                        st.subheader("🎯 Benchmarking Results (Observed Variables)")
-                        st.write("Compare chosen cf_y/cf_d to observed variable strength.")
-                        try:
-                            dml_data_for_bench = dml_plr._dml_data
-                            with st.spinner("Fitting benchmark model (may be cached)..."):
-                                dml_plr_bench = fit_benchmark_model(
-                                    dml_data_for_bench,
-                                    st.session_state.results.get('best_estimator_l'),
-                                    st.session_state.results.get('best_estimator_m'),
-                                    st.session_state.variable_config['n_folds'],
-                                    st.session_state.variable_config['score_type']
-                                )
-                            
-                            for var in benchmark_vars:
-                                with st.expander(f"📊 Benchmark: **{var}**"):
-                                    try:
-                                        bench_result = dml_plr_bench.sensitivity_benchmark(benchmarking_set=[var])
-                                        st.dataframe(bench_result.to_frame().T, use_container_width=True)
-                                        st.info(f"If unobserved confounding matched **{var}**, these would be the implied parameters.")
-                                    except Exception as e:
-                                        st.error(f"Error benchmarking {var}: {e}")
-                        except Exception as e:
-                            st.warning(f"⚠️ Benchmarking could not be run: {str(e)}")
-
                     with st.expander("🧾 Recent sensitivity runs (most recent last)"):
-                        st.dataframe(pd.DataFrame(st.session_state.sensitivity_runs).tail(10), use_container_width=True)
+                        st.dataframe(pd.DataFrame(st.session_state.sensitivity_runs).tail(10),
+                                     use_container_width=True)
 
                 except Exception as e:
                     st.error(f"❌ Sensitivity analysis failed: {e}")
