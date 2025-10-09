@@ -726,6 +726,8 @@ elif step == "4️⃣ Sensitivity Analysis":
     else:
         import matplotlib.pyplot as plt
         import doubleml as dml
+        from matplotlib.figure import Figure
+        from matplotlib.axes import Axes
 
         dml_plr = st.session_state.results['dml_plr']
 
@@ -740,24 +742,38 @@ elif step == "4️⃣ Sensitivity Analysis":
         if st.button("🔍 Run Sensitivity Analysis", type="primary"):
             with st.spinner("Running sensitivity analysis..."):
                 try:
-                    # --- Run core DoubleML methods ---
+                    # --- Run core DoubleML method ---
                     dml_plr.sensitivity_analysis(
-                        cf_y=cf_y, cf_d=cf_d, rho=rho,
-                        level=level, null_hypothesis=null_hypothesis
+                        cf_y=cf_y,
+                        cf_d=cf_d,
+                        rho=rho,
+                        level=level,
+                        null_hypothesis=null_hypothesis
                     )
 
-                    # --- Show text summary ---
+                    # --- Show textual summary like in the official tutorial ---
                     st.subheader("📊 Sensitivity Summary")
                     st.text(dml_plr.sensitivity_summary)
 
-                    # --- Plot the sensitivity surface (DoubleML handles everything) ---
+                    # --- Plot handling (robust for both Axes and Figure) ---
                     st.subheader("📈 Sensitivity Plot")
                     plt.close('all')
-                    fig = dml_plr.sensitivity_plot()
+                    plot_obj = dml_plr.sensitivity_plot()
+
+                    # Safe figure extraction for Streamlit display
+                    if isinstance(plot_obj, Axes):
+                        fig = plot_obj.get_figure()
+                    elif isinstance(plot_obj, Figure):
+                        fig = plot_obj
+                    else:
+                        st.warning("Plot object type not recognized; falling back to current figure.")
+                        fig = plt.gcf()
+
                     st.pyplot(fig)
                     plt.close(fig)
 
-                    st.success("✅ Done.")
+                    st.success("✅ Sensitivity analysis complete.")
+
                 except Exception as e:
                     st.error(f"❌ Sensitivity analysis failed: {e}")
                     st.exception(e)
