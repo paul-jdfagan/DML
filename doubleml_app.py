@@ -210,6 +210,10 @@ elif step == "2️⃣ Configure Analysis":
     if st.session_state.df is None:
         st.warning("⚠️ Please upload data first (Step 1)")
     else:
+        import pandas as pd
+        import numpy as np
+        from datetime import timedelta
+        
         df = st.session_state.df
         
         # Core Variables Section
@@ -278,20 +282,50 @@ elif step == "2️⃣ Configure Analysis":
         
         with col1:
             include_cyclical = st.checkbox("📈 Cyclical Features", value=True,
-                                          help="Sin/cos encodings for month, day of week, day of year")
+                                          help="Sin/cos encodings for month, day of week, day of year (repeat yearly)")
         
         with col2:
             include_calendar = st.checkbox("📅 Calendar Features", value=True,
-                                          help="Weekend, month start/end, quarter flags")
+                                          help="Weekend, month start/end, quarter flags (change slightly each year)")
         
         with col3:
             include_trend = st.checkbox("📉 Trend Features", value=True,
-                                       help="Linear and quadratic time trends")
+                                       help="Linear and quadratic time trends (depends on dataset length)")
         
         with col4:
             include_retail = st.checkbox("🛍️ Retail Events", value=False,
-                                        help="Holiday season, Black Friday, Prime Day, etc.")
-        
+                                        help="Holiday season, Black Friday, Cyber Monday, Prime Day, etc. (year-dependent)")
+
+        # --- Helper for Retail Events ---
+        def get_retail_events(year: int) -> pd.DataFrame:
+            """Compute key US retail events for a given year."""
+            thanksgiving = pd.date_range(f"{year}-11-01", f"{year}-11-30", freq="W-THU")[3]
+            black_friday = thanksgiving + timedelta(days=1)
+            cyber_monday = thanksgiving + timedelta(days=4)
+            prime_day_start = pd.Timestamp(f"{year}-07-15")
+            prime_day_end = prime_day_start + timedelta(days=1)
+            back_to_school_start = pd.Timestamp(f"{year}-08-01")
+            back_to_school_end = pd.Timestamp(f"{year}-09-15")
+
+            events = [
+                {"event": "Black Friday", "date": black_friday},
+                {"event": "Cyber Monday", "date": cyber_monday},
+                {"event": "Prime Day Start", "date": prime_day_start},
+                {"event": "Prime Day End", "date": prime_day_end},
+                {"event": "Back to School Start", "date": back_to_school_start},
+                {"event": "Back to School End", "date": back_to_school_end},
+            ]
+            return pd.DataFrame(events)
+
+        if include_retail:
+            years = sorted(pd.to_datetime(df[date_col]).dt.year.unique())
+            retail_flags = []
+            for y in years:
+                retail_flags.append(get_retail_events(y))
+            all_events = pd.concat(retail_flags)
+            st.write("🗓️ Retail Events Automatically Detected:")
+            st.dataframe(all_events)
+
         # Model Configuration Section
         st.markdown("---")
         st.subheader("⚙️ Model Configuration")
@@ -343,7 +377,6 @@ elif step == "2️⃣ Configure Analysis":
         st.markdown("---")
         if st.button("✅ Confirm Configuration", type="primary", use_container_width=True):
             
-            # Validate configuration
             if not confounder_cols:
                 st.warning("⚠️ Consider adding confounding variables for more robust estimates")
             
@@ -366,7 +399,6 @@ elif step == "2️⃣ Configure Analysis":
                 'trim_threshold': trim_threshold
             }
             
-            # Add transformation-specific params
             if treatment_transform == "Adstock (Geometric Decay)":
                 config['alpha'] = alpha
                 config['lags'] = lags
@@ -375,17 +407,14 @@ elif step == "2️⃣ Configure Analysis":
             
             st.session_state.variable_config = config
             
-            # Show configuration summary
             st.success("✅ Configuration saved! Here's your setup:")
             
             summary_col1, summary_col2 = st.columns(2)
-            
             with summary_col1:
                 st.write("**Variables:**")
                 st.write(f"- Outcome: `{outcome_col}`")
                 st.write(f"- Treatment: `{treatment_col}`")
                 st.write(f"- Confounders: {len(confounder_cols)}")
-            
             with summary_col2:
                 st.write("**Configuration:**")
                 st.write(f"- Transform: {treatment_transform}")
