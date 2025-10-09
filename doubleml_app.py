@@ -958,29 +958,31 @@ elif step == "4️⃣ Sensitivity Analysis":
                     st.markdown("---")
                     st.subheader("📈 Sensitivity Plots")
                     tab1, tab2 = st.tabs(["Effect Bounds (θ)", "Confidence Interval Bounds"])
-
-                    # --- 🚨 FIX: Create a pandas DataFrame for the benchmark ---
-                    # The `benchmarks` parameter expects a DataFrame with the index as the label
-                    # and columns named 'cf_y' and 'cf_d'.
+                    
+                    # --- 🚨 FIX: Create a dictionary for the benchmark ---
+                    # The `benchmarks` parameter in this version expects a dictionary with
+                    # keys 'cf_y', 'cf_d', and 'name'.
                     scenario_label = scenario if scenario != "Custom" else "Custom Scenario"
                     benchmark_name = f"{scenario_label} (ρ={rho:.2f})"
-                    scenario_df = pd.DataFrame(
-                        [[cf_y, cf_d]],
-                        columns=['cf_y', 'cf_d'],
-                        index=[benchmark_name]
-                    )
-
+                    scenario_dict = {
+                        "cf_y": [cf_y],
+                        "cf_d": [cf_d],
+                        "name": [benchmark_name]
+                    }
+                    
                     with tab1:
                         st.write("Point estimate θ under varying confounding:")
                         plt.close('all')
-                        obj_theta = dml_plr.sensitivity_plot(value='theta', benchmarks=scenario_df)
+                        # Pass the correctly formatted dictionary
+                        obj_theta = dml_plr.sensitivity_plot(value='theta', benchmarks=scenario_dict)
                         _style_and_render(obj_theta)
                         st.caption("Marker indicates the current scenario settings.")
                     
                     with tab2:
                         st.write(f"{int(level*100)}% CI under varying confounding:")
                         plt.close('all')
-                        obj_ci = dml_plr.sensitivity_plot(value='ci', level=level, benchmarks=scenario_df)
+                        # Pass the same dictionary here
+                        obj_ci = dml_plr.sensitivity_plot(value='ci', level=level, benchmarks=scenario_dict)
                         _style_and_render(obj_ci)
                         st.caption("Where the lower bound crosses H₀ indicates required confounding to nullify the result.")
 
