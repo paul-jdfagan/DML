@@ -780,6 +780,67 @@ elif step == "4️⃣ Sensitivity Analysis":
             else:
                 st.info("Plot object not recognized; nothing to display.")
 
+        # --- Plot styling to match DoubleML tutorials ---
+        def style_plotly_sensitivity(fig):
+            try:
+                import plotly.graph_objs as go  # noqa
+                fig.update_layout(
+                    template="plotly_white",
+                    font=dict(size=12),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    margin=dict(l=40, r=20, t=40, b=40),
+                )
+                for tr in fig.data:
+                    if getattr(tr, "type", "") in ("heatmap", "contour"):
+                        tr.colorscale = "Viridis"
+                        if getattr(tr, "colorbar", None):
+                            tr.colorbar.title = tr.colorbar.title or "θ bound"
+                    if getattr(tr, "mode", "") and "markers" in tr.mode:
+                        tr.marker.update(size=12, line=dict(width=1.5, color="white"), symbol="x")
+                return fig
+            except Exception:
+                return fig  # no-op if plotly missing
+        
+        def style_mpl_sensitivity(fig):
+            try:
+                import matplotlib.pyplot as plt  # noqa
+                for ax in fig.get_axes():
+                    ax.grid(True, alpha=0.25)
+                    for im in ax.get_images():
+                        im.set_cmap("viridis")
+                    for coll in ax.collections:
+                        try:
+                            coll.set_cmap("viridis")
+                        except Exception:
+                            pass
+                    leg = ax.get_legend()
+                    if leg:
+                        leg.get_frame().set_alpha(0.9)
+                        leg.get_frame().set_edgecolor("#cccccc")
+                fig.tight_layout()
+                return fig
+            except Exception:
+                return fig
+        
+        def _style_and_render(plot_obj):
+            # Prefer styling, then render, for both backends
+            try:
+                import plotly.graph_objs as go
+                if isinstance(plot_obj, go.Figure):
+                    st.plotly_chart(style_plotly_sensitivity(plot_obj), use_container_width=True)
+                    return
+            except Exception:
+                pass
+            try:
+                from matplotlib.figure import Figure as _MplFigure
+                if isinstance(plot_obj, _MplFigure) or hasattr(plot_obj, "savefig"):
+                    st.pyplot(style_mpl_sensitivity(plot_obj))
+                    return
+            except Exception:
+                pass
+            # Fallback to original renderer
+            _render_doubleml_plot(plot_obj)
+
         st.info(
             "📊 Sensitivity Analysis evaluates how strong unobserved confounding must be to change your conclusion "
             "(e.g., nullify θ or cross a null bound)."
