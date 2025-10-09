@@ -840,17 +840,24 @@ elif step == "4️⃣ Sensitivity Analysis":
         # Preset scenarios (these will be most-used; make sure we visualize them)
         st.subheader("📋 Preset Scenarios")
         scenario = st.selectbox(
-            "Or choose a preset scenario:",
-            ["Custom", "Weak Confounding", "Moderate Confounding", "Strong Confounding", "Extreme Confounding"]
+            "Choose a scenario:",
+            ["Custom", "Weak Confounding", "Moderate Confounding", "Strong Confounding", "Extreme Confounding"],
+            key="scenario_select"
         )
-        if scenario == "Weak Confounding":
-            cf_y, cf_d = 0.01, 0.01
-        elif scenario == "Moderate Confounding":
-            cf_y, cf_d = 0.05, 0.05
-        elif scenario == "Strong Confounding":
-            cf_y, cf_d = 0.10, 0.10
-        elif scenario == "Extreme Confounding":
-            cf_y, cf_d = 0.20, 0.20
+        
+        # Update parameters based on scenario
+        if scenario != "Custom":
+            scenario_params = {
+                "Weak Confounding": (0.01, 0.01),
+                "Moderate Confounding": (0.05, 0.05),
+                "Strong Confounding": (0.10, 0.10),
+                "Extreme Confounding": (0.20, 0.20)
+            }
+            cf_y, cf_d = scenario_params[scenario]
+            st.info(f"📌 Scenario set: cf_y={cf_y}, cf_d={cf_d}")
+            # Override slider values
+            st.session_state.cf_y = cf_y
+            st.session_state.cf_d = cf_d
 
         # Benchmarking
         st.markdown("---")
