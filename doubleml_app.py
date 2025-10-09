@@ -720,64 +720,306 @@ elif step == "3️⃣ Run Analysis":
 
 elif step == "4️⃣ Sensitivity Analysis":
     st.header("Step 4: Sensitivity Analysis")
-
+    
+    # Check for the correct session state key
     if st.session_state.get('results') is None or st.session_state.results.get('dml_plr') is None:
-        st.warning("⚠️ Please run the causal analysis first (Step 3).")
+        st.warning("⚠️ Please run the causal analysis first (Step 3)")
+        st.info("The sensitivity analysis tests how robust your results are to **unobserved confounding**.")
     else:
-        import matplotlib.pyplot as plt
-        import doubleml as dml
-        from matplotlib.figure import Figure
-        from matplotlib.axes import Axes
-
+        # Assuming the dml_plr object is stored in st.session_state.results['dml_plr']
         dml_plr = st.session_state.results['dml_plr']
 
-        # ---- Basic parameters ----
-        st.subheader("🎛️ Parameters")
-        cf_y = st.number_input("Partial R² with outcome (cf_y)", 0.0, 1.0, 0.05, 0.01)
-        cf_d = st.number_input("Partial R² with treatment (cf_d)", 0.0, 1.0, 0.05, 0.01)
-        rho = st.slider("Correlation (ρ)", -1.0, 1.0, 1.0, 0.1)
-        level = st.slider("Confidence Level", 0.8, 0.99, 0.95, 0.01)
-        null_hypothesis = st.number_input("Null hypothesis (θ₀)", value=0.0, step=0.1)
+         # Ensure a treatment name exists (prevents 'undefined' in titles/labels)
+        treatment_from_app = st.session_state.results.get('treatment_var_name', None)
+        if getattr(dml_plr, "d_cols", None) and len(dml_plr.d_cols) > 0:
+            treatment_names = list(dml_plr.d_cols)
+        else:
+            treatment_names = [treatment_from_app or "treatment"]
+            dml_plr.d_cols = treatment_names  # for plotting/title consistency
 
-        if st.button("🔍 Run Sensitivity Analysis", type="primary"):
+        # --- Helper: render whatever DoubleML returns (Plotly or Matplotlib) ---
+        try:
+            import plotly.graph_objs as go
+            _PlotlyFigure = go.Figure
+        except Exception:
+            _PlotlyFigure = tuple()  # plotly not available
+
+        from matplotlib.figure import Figure as _MplFigure
+        from matplotlib.axes import Axes as _MplAxes
+        import matplotlib.pyplot as plt
+
+        def _render_doubleml_plot(plot_obj):
+            # Plotly Figure?
+            if _PlotlyFigure and isinstance(plot_obj, _PlotlyFigure):
+                st.plotly_chart(plot_obj, use_container_width=True)
+                return
+            # Matplotlib Figure?
+            if isinstance(plot_obj, _MplFigure) or hasattr(plot_obj, "savefig"):
+                fig = plot_obj
+                try:
+                    fig.tight_layout()
+                except Exception:
+                    pass
+                st.pyplot(fig)
+                plt.close(fig)
+                return
+            # Matplotlib Axes?
+            if isinstance(plot_obj, _MplAxes) and hasattr(plot_obj, "figure"):
+                fig = plot_obj.figure
+                try:
+                    fig.tight_layout()
+                except Exception:
+                    pass
+                st.pyplot(fig)
+                plt.close(fig)
+                return
+            # None (drawn on current figure)?
+            fig = plt.gcf()
+            if isinstance(fig, _MplFigure):
+                try:
+                    fig.tight_layout()
+                except Exception:
+                    pass
+                st.pyplot(fig)
+                plt.close(fig)
+            else:
+                st.info("Plot object not recognized; nothing to display.")
+
+        st.info("""
+        📊 **Sensitivity Analysis** assesses how robust your causal estimates are to potential **unobserved confounding**.
+        
+        Even after controlling for observed confounders, there may be unmeasured variables that affect both treatment and outcome.
+        This analysis shows how strong such confounding would need to be to change your conclusions.
+        """)
+        
+        # Sensitivity Parameters
+        st.subheader("🎛️ Sensitivity Parameters")
+        
+        # Initialize default values in a robust way
+        default_cf_y = st.session_state.get('cf_y', 0.05)
+        default_cf_d = st.session_state.get('cf_d', 0.05)
+        default_rho = st.session_state.get('rho', 1.0)
+        default_level = st.session_state.get('level', 0.95)
+
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            cf_y = st.number_input(
+                "Partial R² with outcome (cf_y)",
+                min_value=0.0,
+                max_value=1.0,
+                value=default_cf_y,
+                step=0.01,
+                format="%.4f",
+                help="Strength of association between unobserved confounder and outcome (0-1)"
+            )
+            st.caption("💡 Represents how much of the outcome variance the unobserved confounder explains")
+        
+        with col2:
+            cf_d = st.number_input(
+                "Partial R² with treatment (cf_d)",
+                min_value=0.0,
+                max_value=1.0,
+                value=default_cf_d,
+                step=0.01,
+                format="%.4f",
+                help="Strength of association between unobserved confounder and treatment (0-1)"
+            )
+            st.caption("💡 Represents how much of the treatment variance the unobserved confounder explains")
+        
+        col3, col4 = st.columns(2)
+        
+        with col3:
+            rho = st.slider(
+                "Correlation (ρ)",
+                min_value=-1.0,
+                max_value=1.0,
+                value=default_rho,
+                step=0.1,
+                help="Correlation between confounding effects on outcome and treatment"
+            )
+        
+        with col4:
+            level = st.slider(
+                "Confidence Level",
+                min_value=0.80,
+                max_value=0.99,
+                value=default_level,
+                step=0.01,
+                format="%.2f"
+            )
+        
+        # Store current values for persistence
+        st.session_state.cf_y = cf_y
+        st.session_state.cf_d = cf_d
+        st.session_state.rho = rho
+        st.session_state.level = level
+
+        # Preset scenarios
+        st.subheader("📋 Preset Scenarios")
+        scenario = st.selectbox(
+            "Or choose a preset scenario:",
+            ["Custom", "Weak Confounding", "Moderate Confounding", "Strong Confounding", "Extreme Confounding"]
+        )
+        if scenario == "Weak Confounding":
+            cf_y, cf_d = 0.01, 0.01
+        elif scenario == "Moderate Confounding":
+            cf_y, cf_d = 0.05, 0.05
+        elif scenario == "Strong Confounding":
+            cf_y, cf_d = 0.10, 0.10
+        elif scenario == "Extreme Confounding":
+            cf_y, cf_d = 0.20, 0.20
+        
+        # Benchmarking
+        st.markdown("---")
+        st.subheader("📊 Benchmarking Against Observed Variables")
+        st.write("""
+        Compare the sensitivity parameters to observed confounders to understand what level of 
+        unobserved confounding would be needed to overturn your results.
+        """)
+        available_vars = st.session_state.results.get('confounder_cols', [])
+        if available_vars:
+            default_benchmarks = st.session_state.get('benchmark_vars', available_vars[:min(3, len(available_vars))])
+            benchmark_vars = st.multiselect(
+                "Select variables to use as benchmarks:",
+                available_vars,
+                default=default_benchmarks,
+                help="These variables will be used to calibrate the sensitivity analysis"
+            )
+            st.session_state.benchmark_vars = benchmark_vars
+        else:
+            st.warning("⚠️ No confounding variables available for benchmarking")
+            benchmark_vars = []
+        
+        # Run Analysis Button
+        st.markdown("---")
+        if st.button("🔍 Run Sensitivity Analysis", type="primary", use_container_width=True):
             with st.spinner("Running sensitivity analysis..."):
                 try:
-                    # --- Run core DoubleML method ---
-                    dml_plr.sensitivity_analysis(
-                        cf_y=cf_y,
-                        cf_d=cf_d,
-                        rho=rho,
-                        level=level,
-                        null_hypothesis=null_hypothesis
-                    )
-
-                    # --- Show textual summary like in the official tutorial ---
+                    # Run sensitivity analysis for chosen parameters
+                    dml_plr.sensitivity_analysis(cf_y=cf_y, cf_d=cf_d, rho=rho, level=level)
+                    st.success("✅ Sensitivity analysis complete!")
+                    
+                    # --- Summary: Build a DataFrame from sensitivity_params (version-proof) ---
+                    st.markdown("---")
                     st.subheader("📊 Sensitivity Summary")
-                    st.text(dml_plr.sensitivity_summary)
 
-                    # --- Plot handling (robust for both Axes and Figure) ---
-                    st.subheader("📈 Sensitivity Plot")
-                    plt.close('all')
-                    plot_obj = dml_plr.sensitivity_plot()
+                    params = getattr(dml_plr, "sensitivity_params", None)
+                    if params is not None:
+                        try:
+                            tname = dml_plr.d_cols[0] if hasattr(dml_plr, "d_cols") else "treatment"
+                        except Exception:
+                            tname = "treatment"
 
-                    # Safe figure extraction for Streamlit display
-                    if isinstance(plot_obj, Axes):
-                        fig = plot_obj.get_figure()
-                    elif isinstance(plot_obj, Figure):
-                        fig = plot_obj
+                        row = {
+                            "theta lower": float(params["theta"]["lower"][0]),
+                            "theta":       float(getattr(dml_plr, "coef", [np.nan])[0]),
+                            "theta upper": float(params["theta"]["upper"][0]),
+                            "CI lower":    float(params["ci"]["lower"][0]),
+                            "CI upper":    float(params["ci"]["upper"][0]),
+                            "RV (%)":      float(params.get("rv", [np.nan])[0]) * 100 if params.get("rv") is not None else np.nan,
+                            "RVa (%)":     float(params.get("rva", [np.nan])[0]) * 100 if params.get("rva") is not None else np.nan,
+                        }
+                        summary_df = pd.DataFrame([row], index=[tname])
+                        st.dataframe(summary_df, use_container_width=True)
                     else:
-                        st.warning("Plot object type not recognized; falling back to current figure.")
-                        fig = plt.gcf()
+                        # Fallback: print whatever summary exists (string or DataFrame)
+                        summary = getattr(dml_plr, "sensitivity_summary", None)
+                        if isinstance(summary, pd.DataFrame):
+                            st.dataframe(summary, use_container_width=True)
+                        elif summary is not None:
+                            st.markdown(f"```text\n{summary}\n```")
+                        else:
+                            st.info("No sensitivity summary was returned by DoubleML.")
 
-                    st.pyplot(fig)
-                    plt.close(fig)
+                    # --- Plots: Handle Plotly/Mpl/None robustly ---
+                    st.markdown("---")
+                    st.subheader("📈 Sensitivity Plots")
+                    tab1, tab2 = st.tabs(["Effect Bounds (θ)", "Confidence Interval Bounds"])
 
-                    st.success("✅ Sensitivity analysis complete.")
+                    st.caption(f"Treatment: `{treatment_names[0]}`")
 
+                    with tab1:
+                        st.write("Shows how the **point estimate** changes with different levels of confounding:")
+                        plt.close('all')
+                        obj_theta = dml_plr.sensitivity_plot(value='theta')
+                        _render_doubleml_plot(obj_theta)
+                        st.caption("The plot shows the estimated causal effect across different values of confounding strength. The shaded region represents the sensitivity bounds.")
+                    
+                    with tab2:
+                        st.write(f"Shows how the **{level*100:.0f}% confidence interval** changes with different levels of confounding:")
+                        plt.close('all')
+                        obj_ci = dml_plr.sensitivity_plot(value='ci', level=level)
+                        _render_doubleml_plot(obj_ci)
+                        st.caption("The plot shows the confidence interval bounds across different values of confounding strength. The line where the lower bound crosses zero indicates the confounding needed to make the effect insignificant.")
+
+                    # Benchmarking Results
+                    if benchmark_vars:
+                        st.markdown("---")
+                        st.subheader("🎯 Benchmarking Results")
+                        st.write("""
+                        These results compare the sensitivity parameters to observed confounders,
+                        helping you understand what "strength" of unobserved confounding would be needed.
+                        """)
+                        for var in benchmark_vars:
+                            with st.expander(f"📊 Benchmark: **{var}**"):
+                                try:
+                                    bench_result = dml_plr.sensitivity_benchmark(benchmarking_set=[var])
+                                    if hasattr(bench_result, 'to_frame'):
+                                        st.dataframe(bench_result.to_frame().T, use_container_width=True)
+                                    elif isinstance(bench_result, dict):
+                                        st.write("**Benchmark Parameters:**")
+                                        for key, value in bench_result.items():
+                                            try:
+                                                st.write(f"- **{key}**: `{float(value):.4f}`")
+                                            except Exception:
+                                                st.write(f"- **{key}**: `{value}`")
+                                    else:
+                                        st.write(bench_result)
+                                    st.info(f"""
+                                    This shows the confounding strength of **{var}**. 
+                                    If unobserved confounding is similar in strength to **{var}**, 
+                                    these would be the sensitivity parameters (cf_y and cf_d).
+                                    """)
+                                except Exception as e:
+                                    st.error(f"Error benchmarking {var}: {str(e)}")
+                    
+                    # Additional Insights
+                    st.markdown("---")
+                    st.subheader("💡 Key Insights")
+                    with st.expander("🤔 How to interpret these results"):
+                        st.markdown("""
+                        **Sensitivity Analysis Guidelines:**
+                        
+                        1. **Small cf_y and cf_d values (< 0.05)**: Your results are robust to weak unobserved confounding
+                        2. **Moderate values (0.05 - 0.15)**: Results require careful interpretation
+                        3. **Large values (> 0.15)**: Results are sensitive to unobserved confounding
+                        
+                        **Benchmarking helps you answer:**
+                        - "How strong would an unobserved confounder need to be compared to my observed confounders?"
+                        - "Is it plausible that such a confounder exists in my context?"
+                        
+                        **Best practices:**
+                        - Compare cf_y and cf_d to R² values from your observed confounders
+                        - Consider domain knowledge about potential unobserved confounders
+                        - Report sensitivity results alongside main estimates
+                        - If results are sensitive, consider collecting additional covariates
+                        """)
+                    
+                    with st.expander("📚 Learn More"):
+                        st.markdown("""
+                        **Resources:**
+                        - [DoubleML Documentation](https://docs.doubleml.org/)
+                        - Chernozhukov et al. (2018): "Double/debiased machine learning for treatment and structural parameters"
+                        - Cinelli & Hazlett (2020): "Making sense of sensitivity: Extending omitted variable bias"
+                        
+                        **Citation:**
+                        If you use this tool in research, please cite the DoubleML package and relevant methodology papers.
+                        """)
+                    
                 except Exception as e:
-                    st.error(f"❌ Sensitivity analysis failed: {e}")
+                    st.error(f"❌ Error during sensitivity analysis: {str(e)}")
                     st.exception(e)
-
 # Footer
 st.markdown("---")
 st.markdown(
