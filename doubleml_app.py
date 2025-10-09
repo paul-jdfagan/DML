@@ -721,218 +721,43 @@ elif step == "3️⃣ Run Analysis":
 elif step == "4️⃣ Sensitivity Analysis":
     st.header("Step 4: Sensitivity Analysis")
 
-    # --- Guards ---
     if st.session_state.get('results') is None or st.session_state.results.get('dml_plr') is None:
         st.warning("⚠️ Please run the causal analysis first (Step 3).")
-        st.info("Sensitivity analysis tests robustness to unobserved confounding.")
     else:
-        import pandas as pd
-        import numpy as np
         import matplotlib.pyplot as plt
         import doubleml as dml
 
         dml_plr = st.session_state.results['dml_plr']
 
-        # Ensure a treatment label exists for titles/labels
-        treatment_from_app = st.session_state.results.get('treatment_var_name', None)
-        if getattr(dml_plr, "d_cols", None) and len(dml_plr.d_cols) > 0:
-            treatment_names = list(dml_plr.d_cols)
-        else:
-            treatment_names = [treatment_from_app or "treatment"]
-            dml_plr.d_cols = treatment_names
-        treatment_label = treatment_names[0]
-
-        # ---------- Plot backends ----------
-        try:
-            import plotly.graph_objs as go
-            _PlotlyFigure = go.Figure
-        except Exception:
-            _PlotlyFigure = tuple()
-
-        from matplotlib.figure import Figure as _MplFigure
-        from matplotlib.axes import Axes as _MplAxes
-
-        # --- Minimal renderer ---
-        def _render(plot_obj):
-            if _PlotlyFigure and isinstance(plot_obj, _PlotlyFigure):
-                st.plotly_chart(plot_obj, use_container_width=True)
-                return
-            if isinstance(plot_obj, (_MplFigure, _MplAxes)):
-                fig = plot_obj.figure if isinstance(plot_obj, _MplAxes) else plot_obj
-                try:
-                    fig.tight_layout()
-                except Exception:
-                    pass
-                st.pyplot(fig)
-                plt.close(fig)
-                return
-            st.info("Plot object not recognized; nothing to display.")
-
-        # --- Plot styling (tutorial look) ---
-        def style_plotly(fig):
-            try:
-                import plotly.graph_objs as go  # noqa
-                fig.update_layout(
-                    template="plotly_white",
-                    font=dict(size=12),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    margin=dict(l=40, r=20, t=40, b=40),
-                )
-                for tr in fig.data:
-                    if getattr(tr, "type", "") in ("heatmap", "contour"):
-                        tr.colorscale = "Viridis"  # or "Turbo" if you prefer
-                        if getattr(tr, "colorbar", None):
-                            tr.colorbar.title = tr.colorbar.title or "θ bound"
-                    if getattr(tr, "mode", "") and "markers" in tr.mode:
-                        tr.marker.update(size=12, line=dict(width=1.5, color="white"), symbol="x")
-                        if hasattr(tr, "name") and getattr(tr, "x", None) is not None:
-                            tr.text = [tr.name] * len(tr.x)
-                            tr.textposition = "top center"
-                            tr.textfont = dict(size=11, color="black")
-                return fig
-            except Exception:
-                return fig
-
-        def style_and_render(fig, title_text=None):
-            # Set title if Plotly; if Matplotlib, set suptitle
-            if _PlotlyFigure and isinstance(fig, _PlotlyFigure):
-                if title_text:
-                    fig.update_layout(title=dict(text=title_text, x=0.5, xanchor="center"))
-                _render(style_plotly(fig))
-            elif isinstance(fig, (_MplFigure, _MplAxes)):
-                _fig = fig.figure if isinstance(fig, _MplAxes) else fig
-                if title_text:
-                    try:
-                        _fig.suptitle(title_text)
-                    except Exception:
-                        pass
-                _render(_fig)
-            else:
-                _render(fig)
-
-        st.info("📊 Sensitivity Analysis evaluates how strong unobserved confounding must be to change your conclusion "
-                "(e.g., nullify θ or cross a null bound).")
-
-        # ---------- Session-state defaults ----------
-        for key, default in [
-            ('last_cf_y', 0.05), ('last_cf_d', 0.05), ('last_rho', 1.0),
-            ('last_level', 0.95), ('last_null_hyp', 0.0),
-        ]:
-            st.session_state.setdefault(key, default)
-
-        # ============= 1) Preset Scenarios (comes first) =============
-        st.subheader("📋 Preset Scenarios")
-        scenario = st.selectbox(
-            "Choose a scenario:",
-            ["Custom", "Weak Confounding", "Moderate Confounding", "Strong Confounding", "Extreme Confounding"],
-            key="scenario_select",
-            help="Scenario sets defaults for sliders; choose Custom to edit and save your own values."
-        )
-        preset_map = {
-            "Weak Confounding": (0.01, 0.01, 1.0, 0.95, 0.0),
-            "Moderate Confounding": (0.05, 0.05, 1.0, 0.95, 0.0),
-            "Strong Confounding": (0.10, 0.10, 1.0, 0.95, 0.0),
-            "Extreme Confounding": (0.20, 0.20, 1.0, 0.95, 0.0),
-        }
-        if scenario == "Custom":
-            default_cf_y, default_cf_d, default_rho, default_level, default_null = (
-                st.session_state['last_cf_y'], st.session_state['last_cf_d'],
-                st.session_state['last_rho'], st.session_state['last_level'],
-                st.session_state['last_null_hyp']
-            )
-        else:
-            default_cf_y, default_cf_d, default_rho, default_level, default_null = preset_map[scenario]
-
-        # ============= 2) Parameters (after scenario) =============
+        # ---- Basic parameters ----
         st.subheader("🎛️ Parameters")
-        col1, col2 = st.columns(2)
-        with col1:
-            cf_y = st.number_input("Partial R² with outcome (cf_y)",
-                                   min_value=0.0, max_value=1.0, value=float(default_cf_y),
-                                   step=0.01, format="%.4f", key=f"cf_y_input_{scenario}")
-            st.caption("Interpretation: confounder strength on outcome residual.")
-        with col2:
-            cf_d = st.number_input("Partial R² with treatment (cf_d)",
-                                   min_value=0.0, max_value=1.0, value=float(default_cf_d),
-                                   step=0.01, format="%.4f", key=f"cf_d_input_{scenario}")
-            st.caption("Interpretation: confounder strength on treatment residual.")
-        col3, col4 = st.columns(2)
-        with col3:
-            rho = st.slider("Correlation (ρ) between confounding effects",
-                            min_value=-1.0, max_value=1.0, value=float(default_rho),
-                            step=0.1, key=f"rho_input_{scenario}")
-        with col4:
-            level = st.slider("Confidence Level",
-                              min_value=0.80, max_value=0.99, value=float(default_level),
-                              step=0.01, format="%.2f", key=f"level_input_{scenario}")
-        st.subheader("Null hypothesis (for RV / RVa)")
-        null_hyp = st.number_input("H₀ (null hypothesis for θ)", value=float(default_null),
-                                   step=0.1, format="%.4f", key=f"null_input_{scenario}")
+        cf_y = st.number_input("Partial R² with outcome (cf_y)", 0.0, 1.0, 0.05, 0.01)
+        cf_d = st.number_input("Partial R² with treatment (cf_d)", 0.0, 1.0, 0.05, 0.01)
+        rho = st.slider("Correlation (ρ)", -1.0, 1.0, 1.0, 0.1)
+        level = st.slider("Confidence Level", 0.8, 0.99, 0.95, 0.01)
+        null_hypothesis = st.number_input("Null hypothesis (θ₀)", value=0.0, step=0.1)
 
-        if scenario == "Custom":
-            st.session_state.update(last_cf_y=cf_y, last_cf_d=cf_d, last_rho=rho,
-                                    last_level=level, last_null_hyp=null_hyp)
-
-        # ============= 3) Run =============
-        st.markdown("---")
-        run_col1, run_col2 = st.columns([3, 2])
-        with run_col1:
-            run_clicked = st.button("🔍 Run Sensitivity Analysis", type="primary", use_container_width=True)
-        with run_col2:
-            st.caption(f"Parameters → Scenario: **{scenario}** | cf_y: **{cf_y:.4f}** | cf_d: **{cf_d:.4f}** | "
-                       f"ρ: **{rho:.2f}** | Level: **{level:.2f}** | H₀: **{null_hyp:.4f}**")
-
-        if run_clicked:
+        if st.button("🔍 Run Sensitivity Analysis", type="primary"):
             with st.spinner("Running sensitivity analysis..."):
                 try:
-                    # keep a simple run log for auditability
-                    st.session_state.setdefault('sensitivity_runs', []).append({
-                        "timestamp": pd.Timestamp.utcnow().isoformat(),
-                        "scenario": scenario, "cf_y": float(cf_y), "cf_d": float(cf_d),
-                        "rho": float(rho), "level": float(level), "null_hyp": float(null_hyp)
-                    })
+                    # --- Run core DoubleML methods ---
+                    dml_plr.sensitivity_analysis(
+                        cf_y=cf_y, cf_d=cf_d, rho=rho,
+                        level=level, null_hypothesis=null_hypothesis
+                    )
 
-                    # Run DoubleML sensitivity
-                    dml_plr.sensitivity_analysis(cf_y=cf_y, cf_d=cf_d, rho=rho,
-                                                 level=level, null_hypothesis=null_hyp)
-                    st.success("✅ Sensitivity analysis complete!")
-
-                    # ----- Summary -----
-                    st.markdown("---")
+                    # --- Show text summary ---
                     st.subheader("📊 Sensitivity Summary")
-                    try:
-                        st.text(str(dml_plr.sensitivity_summary))
-                    except Exception:
-                        st.info("Summary text unavailable from backend.")
+                    st.text(dml_plr.sensitivity_summary)
 
-                    # ----- Plots (with scenario marker) -----
-                    st.markdown("---")
-                    st.subheader("📈 Sensitivity Plots")
-                    tab1, tab2 = st.tabs(["Effect Bounds (θ)", "Confidence Interval Bounds"])
+                    # --- Plot the sensitivity surface (DoubleML handles everything) ---
+                    st.subheader("📈 Sensitivity Plot")
+                    plt.close('all')
+                    fig = dml_plr.sensitivity_plot()
+                    st.pyplot(fig)
+                    plt.close(fig)
 
-                    # EXACT tutorial format: benchmarks is a dict of lists
-                    scenario_label = scenario if scenario != "Custom" else "Custom Scenario"
-                    bench_name = f"{scenario_label} (ρ={rho:.2f})"
-                    scenario_bench = {"cf_y": [float(cf_y)], "cf_d": [float(cf_d)], "name": [bench_name]}
-
-                    with tab1:
-                        plt.close('all')
-                        fig_theta = dml_plr.sensitivity_plot(value="theta", benchmarks=scenario_bench)
-                        title1 = f"{treatment_label}: θ bounds under {scenario} (ρ={rho:.2f})"
-                        style_and_render(fig_theta, title_text=title1)
-                        st.caption("Marker indicates the current scenario settings.")
-
-                    with tab2:
-                        plt.close('all')
-                        fig_ci = dml_plr.sensitivity_plot(value="ci", level=level, benchmarks=scenario_bench)
-                        title2 = f"{treatment_label}: {int(level*100)}% CI bounds under {scenario} (ρ={rho:.2f})"
-                        style_and_render(fig_ci, title_text=title2)
-                        st.caption("Where the lower bound crosses H₀ indicates required confounding to nullify the result.")
-
-                    with st.expander("🧾 Recent sensitivity runs (most recent last)"):
-                        st.dataframe(pd.DataFrame(st.session_state.sensitivity_runs).tail(10),
-                                     use_container_width=True)
-
+                    st.success("✅ Done.")
                 except Exception as e:
                     st.error(f"❌ Sensitivity analysis failed: {e}")
                     st.exception(e)
