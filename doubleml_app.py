@@ -791,12 +791,24 @@ elif step == "4️⃣ Sensitivity Analysis":
                     margin=dict(l=40, r=20, t=40, b=40),
                 )
                 for tr in fig.data:
+                    # Color for contour or heatmap layers
                     if getattr(tr, "type", "") in ("heatmap", "contour"):
-                        tr.colorscale = "Viridis"
+                        tr.colorscale = "Viridis"  # or "Turbo" for higher contrast
                         if getattr(tr, "colorbar", None):
                             tr.colorbar.title = tr.colorbar.title or "θ bound"
+        
+                    # Markers for benchmarks (scenario points)
                     if getattr(tr, "mode", "") and "markers" in tr.mode:
-                        tr.marker.update(size=12, line=dict(width=1.5, color="white"), symbol="x")
+                        tr.marker.update(
+                            size=12,
+                            line=dict(width=1.5, color="white"),
+                            symbol="x"
+                        )
+                        # Add text labels for clarity
+                        if hasattr(tr, "name"):
+                            tr.text = [tr.name] * len(tr.x)
+                            tr.textposition = "top center"
+                            tr.textfont = dict(size=11, color="black")
                 return fig
             except Exception:
                 return fig  # no-op if plotly missing
