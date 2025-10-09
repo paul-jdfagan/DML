@@ -1063,14 +1063,14 @@ elif step == "4️⃣ Sensitivity Analysis":
                         st.write("Point estimate θ under varying confounding:")
                         plt.close('all')
                         obj_theta = dml_plr.sensitivity_plot(value='theta', benchmarks=scenario_bench)
-                        _render_doubleml_plot(obj_theta)
+                        _style_and_render(obj_theta)
                         st.caption("Marker indicates the current scenario settings.")
-
+                    
                     with tab2:
                         st.write(f"{int(level*100)}% CI under varying confounding:")
                         plt.close('all')
                         obj_ci = dml_plr.sensitivity_plot(value='ci', level=level, benchmarks=scenario_bench)
-                        _render_doubleml_plot(obj_ci)
+                        _style_and_render(obj_ci)
                         st.caption("Where the lower bound crosses H₀ indicates required confounding to nullify the result.")
 
                     # ============= 7) Optional benchmarking against observed covariates =============
