@@ -1083,22 +1083,120 @@ elif step == "5️⃣ CATE Explorer":
     import numpy as np
     import pandas as pd
     import patsy
+    import matplotlib.pyplot as plt
 
     dim = st.radio("Basis dimension", ["1D", "2D"], horizontal=True)
 
+    # -------------------------------------------------
+    # 1D: with sample-size diagnostics and df guidance
+    # -------------------------------------------------
     if dim == "1D":
         x_var = st.selectbox("Choose variable for the CATE axis (X)", var_options)
-        df_spline = st.slider("Spline df (flexibility)", 3, 10, 5)
+
+        # --- Sample size diagnostics ---
+        st.markdown("---")
+        st.subheader("🔍 Sample Size Diagnostics")
+
+        n_obs = len(data_used)
+        # rules of thumb
+        recommended_max_df = max(3, n_obs // 40)  # lenient
+        safe_df            = max(3, n_obs // 50)  # conservative
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Observations", n_obs)
+        with col2:
+            st.metric("Recommended max df", recommended_max_df)
+        with col3:
+            st.metric("Conservative max df", safe_df)
+
+        min_df = 3
+        max_safe_df = min(5, safe_df)  # don't tempt fate with >5 on ~400 rows
+
+        df_spline = st.slider(
+            "Spline df (flexibility)",
+            min_value=min_df,
+            max_value=max(5, max_safe_df),
+            value=3,
+            help=f"With {n_obs} observations, df>4 risks overfitting."
+        )
+
+        obs_per_df = n_obs / df_spline
+        st.metric("Observations per spline parameter", f"{obs_per_df:.0f}")
+
+        if df_spline > safe_df:
+            st.error(f"❌ df={df_spline} is too high for {n_obs} observations. Reduce to {safe_df} or lower.")
+        elif df_spline > 4:
+            st.warning(f"⚠️ df={df_spline} with {n_obs} observations: moderate overfitting risk. Consider df=3–4.")
+        elif obs_per_df < 30:
+            st.error(f"❌ Only {obs_per_df:.0f} observations per parameter: severe overfitting risk.")
+        elif obs_per_df < 50:
+            st.warning(f"⚠️ Only {obs_per_df:.0f} observations per parameter. Results may be unstable.")
+        else:
+            st.success(f"✅ {obs_per_df:.0f} observations per parameter looks reasonable.")
+
+        # Distribution check on X (raw)
+        x_temp = pd.to_numeric(data_used[x_var], errors="coerce").dropna()
+        with st.expander("📊 View Data Distribution"):
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+
+            lo_temp, hi_temp = np.nanquantile(x_temp, [0.05, 0.95])
+            ax1.hist(x_temp, bins=30, edgecolor='black', alpha=0.7)
+            ax1.axvline(lo_temp, color='red', linestyle='--', label='5th percentile', linewidth=2)
+            ax1.axvline(hi_temp, color='red', linestyle='--', label='95th percentile', linewidth=2)
+            ax1.set_xlabel(x_var); ax1.set_ylabel("Count"); ax1.set_title("Data Distribution")
+            ax1.legend(); ax1.grid(True, alpha=0.3)
+
+            bins_check = pd.cut(x_temp, bins=10)
+            bin_counts = bins_check.value_counts().sort_index()
+            ax2.bar(range(len(bin_counts)), bin_counts.values, edgecolor='black')
+            ax2.axhline(n_obs/20, color='red', linestyle='--', label='5% of data', linewidth=2)
+            ax2.set_xlabel("Decile"); ax2.set_ylabel("Count"); ax2.set_title("Observations per Decile")
+            ax2.legend(); ax2.grid(True, alpha=0.3)
+
+            plt.tight_layout()
+            st.pyplot(fig); plt.close()
+
+            min_bin_count = bin_counts.min()
+            if min_bin_count < n_obs * 0.03:
+                st.warning(f"⚠️ Sparse region detected (min bin count: {min_bin_count}). CI will widen at extremes.")
+
+        # Global caution for sample size
+        st.warning(f"""
+        ⚠️ **Sample Size Consideration**
+        You have **{n_obs} observations**. Good for broad trends; marginal for complex shapes.
+        **Recommendation:** interpret as **directional**; prefer **df=3–4**.
+        """)
+
+    # -------------------------------------------------
+    # 2D: guardrails + conservative df defaults
+    # -------------------------------------------------
     else:
         c1, c2 = st.columns(2)
         with c1:
             x0_var = st.selectbox("X-axis variable", var_options, key="cate_x0")
         with c2:
             x1_var = st.selectbox("Y-axis variable", [v for v in var_options if v != st.session_state.get('cate_x0')], key="cate_x1")
-        df_spline = st.slider("Spline df per axis (flexibility)", 3, 7, 4)
-        grid_size = st.slider("Grid density (per axis)", 30, 120, 60, help="Higher = smoother surface, slower compute")
 
-    n_boot = st.slider("Bootstrap reps for CIs", 200, 3000, 600, 200, help="More reps → tighter but slower")
+        n_obs = len(data_used)
+        st.warning(f"""
+        ⚠️ **2D CATE with {n_obs} observations**
+        Needs substantially more data than 1D.
+        • Use **df=3–4 max per axis**
+        • Expect **wide confidence intervals**
+        • Treat as **exploratory**
+        """)
+
+        df_spline = st.slider(
+            "Spline df per axis (flexibility)",
+            3, min(5, max(3, n_obs // 100)), 3
+        )
+        grid_size = st.slider("Grid density (per axis)", 30, 120, 60,
+                              help="Higher = smoother surface, slower compute")
+
+    # Bootstrap reps (recommend 2000+ for uniform bands)
+    n_boot = st.slider("Bootstrap reps for CIs", 200, 3000, 2000, 200,
+                       help="More reps → tighter uniform CIs (slower). Recommended: 2000+")
 
     st.markdown("---")
     run = st.button("🔬 Compute CATE", type="primary", use_container_width=True)
@@ -1126,7 +1224,6 @@ elif step == "5️⃣ CATE Explorer":
                 df_cate = cate.confint(design_grid, level=0.95, joint=True, n_rep_boot=n_boot)
 
                 # Plot
-                import matplotlib.pyplot as plt
                 fig, ax = plt.subplots(figsize=(8, 5))
                 ax.plot(x_grid, df_cate["effect"], label="Estimated Effect")
                 ax.fill_between(x_grid, df_cate["2.5 %"], df_cate["97.5 %"],
@@ -1222,8 +1319,9 @@ elif step == "5️⃣ CATE Explorer":
     with st.expander("ℹ️ Notes"):
         st.markdown("""
         - We use **raw feature scales** (no standardization) to match DoubleML tutorials.
-        - The prediction grid stays within the **5–95% quantiles** of your data to avoid extrapolation artifacts.
-        - Increase *df* for more flexible shapes; increase *bootstrap reps* for tighter CIs (slower).
+        - The prediction grid stays within the **5–95% quantiles** to avoid extrapolation artifacts.
+        - Use **df=3–4** for ~400–500 rows; higher df risks overfitting.
+        - Increase *bootstrap reps* for tighter **uniform** CIs (slower). Recommended: **2000+**.
         """)
 # Footer
 st.markdown("---")
