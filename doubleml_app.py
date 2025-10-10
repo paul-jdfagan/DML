@@ -132,7 +132,7 @@ with st.sidebar:
     st.header("Navigation")
     step = st.radio(
         "Select Step:",
-        ["1️⃣ Upload Data", "2️⃣ Configure Analysis", "3️⃣ Run Analysis", "4️⃣ Sensitivity Analysis"],
+        ["1️⃣ Upload Data", "2️⃣ Configure Analysis", "3️⃣ Run Analysis", "4️⃣ Sensitivity Analysis", "5️⃣ CATE Explorer"],
         key="nav_step"
     )
     st.markdown("---")
@@ -1049,6 +1049,183 @@ elif step == "4️⃣ Sensitivity Analysis":
                 except Exception as e:
                     st.error(f"❌ Error during sensitivity analysis: {str(e)}")
                     st.exception(e)
+
+elif step == "5️⃣ CATE Explorer":
+    st.header("Step 5: CATE (Heterogeneous Effects) Explorer")
+
+    # --- Guards ---
+    if st.session_state.get('results') is None or st.session_state.results.get('dml_plr') is None:
+        st.warning("⚠️ Please run Step 3 (analysis) first.")
+        st.stop()
+
+    dml_plr = st.session_state.results['dml_plr']
+    config = st.session_state.get('variable_config', {})
+
+    # Try to recover the exact data DoubleML used (keeps the same rows/order)
+    try:
+        data_used = dml_plr._dml_data.data.copy()
+    except Exception:
+        # Fallback: rebuild from the original df (less ideal)
+        st.error("Could not access DoubleML's data. Re-run Step 3 so we can pull the same rows.")
+        st.stop()
+
+    # -----------------------------
+    # Select variables & options
+    # -----------------------------
+    st.info("Select 1 or 2 variables to explore how the treatment effect varies (CATE).")
+    # Candidate axes: treatment + confounders + temporal features
+    var_options = []
+    if 'treatment_col' in config:
+        var_options.append(config['treatment_col'])
+    var_options += config.get('confounder_cols', [])
+    var_options += st.session_state.results.get('temporal_features', [])
+
+    var_options = [v for v in var_options if v in data_used.columns]  # keep only columns present
+
+    import numpy as np
+    import pandas as pd
+    from sklearn.preprocessing import StandardScaler
+    import patsy
+
+    dim = st.radio("Basis dimension", ["1D", "2D"], horizontal=True)
+
+    if dim == "1D":
+        x_var = st.selectbox("Choose variable for the CATE axis (X)", var_options)
+        df_spline = st.slider("Spline df (flexibility)", 3, 10, 5)
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            x0_var = st.selectbox("X-axis variable", var_options, key="cate_x0")
+        with c2:
+            x1_var = st.selectbox("Y-axis variable", [v for v in var_options if v != st.session_state.get('cate_x0')], key="cate_x1")
+        df_spline = st.slider("Spline df per axis (flexibility)", 3, 7, 4)
+        grid_size = st.slider("Grid density (per axis)", 30, 120, 60, help="Higher = smoother surface, slower compute")
+
+    n_boot = st.slider("Bootstrap reps for CIs", 200, 3000, 600, 200, help="More reps → tighter but slower")
+
+    st.markdown("---")
+    run = st.button("🔬 Compute CATE", type="primary", use_container_width=True)
+
+    if run:
+        with st.spinner("Estimating CATE..."):
+            # Standardize chosen variables for stable spline fitting
+            scaler = StandardScaler()
+
+            if dim == "1D":
+                x = data_used[x_var].astype(float).to_numpy().reshape(-1, 1)
+                x_scaled = scaler.fit_transform(x).ravel()
+
+                # Build training design matrix (same rows as DoubleML fit)
+                design = patsy.dmatrix(f"bs(x, df={df_spline}, degree=3)", {"x": x_scaled}, return_type="dataframe")
+                # Fit BLP on this basis
+                cate = dml_plr.cate(design)
+
+                # Build in-support grid (5–95% quantiles) to avoid extrapolation
+                lo, hi = np.quantile(x_scaled, [0.05, 0.95])
+                x_grid = np.linspace(lo, hi, 200)
+                design_grid = patsy.build_design_matrices([design.design_info], {"x": x_grid})[0]
+                design_grid = pd.DataFrame(design_grid, columns=design.columns)
+
+                df_cate = cate.confint(design_grid, level=0.95, joint=True, n_rep_boot=n_boot)
+
+                # Plot
+                import matplotlib.pyplot as plt
+                fig, ax = plt.subplots(figsize=(8, 5))
+                ax.plot(x_grid, df_cate["effect"], label="Effect")
+                ax.fill_between(x_grid, df_cate["2.5 %"], df_cate["97.5 %"], alpha=0.25, label="95% CI")
+                ax.set_xlabel(f"{x_var} (scaled)")
+                ax.set_ylabel("CATE (Δ outcome per Δ treatment)")
+                ax.set_title("1D CATE")
+                ax.legend(loc="best")
+                st.pyplot(fig)
+
+                # Download table
+                out = pd.DataFrame({
+                    f"{x_var}_scaled": x_grid,
+                    "effect": df_cate["effect"],
+                    "ci_lo": df_cate["2.5 %"],
+                    "ci_hi": df_cate["97.5 %"],
+                })
+                st.download_button(
+                    "⬇️ Download CATE (CSV)",
+                    data=out.to_csv(index=False).encode(),
+                    file_name="cate_1d.csv",
+                    mime="text/csv"
+                )
+
+            else:
+                # 2D
+                x0 = data_used[x0_var].astype(float).to_numpy().reshape(-1, 1)
+                x1 = data_used[x1_var].astype(float).to_numpy().reshape(-1, 1)
+                X_scaled = scaler.fit_transform(np.c_[x0, x1])
+                x0s, x1s = X_scaled[:, 0], X_scaled[:, 1]
+
+                # Training tensor-product spline basis
+                design = patsy.dmatrix(
+                    f"te(bs(x0, df={df_spline}, degree=3), bs(x1, df={df_spline}, degree=3))",
+                    {"x0": x0s, "x1": x1s},
+                    return_type="dataframe"
+                )
+                cate = dml_plr.cate(design)
+
+                # In-support grid (5–95% quantiles)
+                lo0, hi0 = np.quantile(x0s, [0.05, 0.95])
+                lo1, hi1 = np.quantile(x1s, [0.05, 0.95])
+                g0 = np.linspace(lo0, hi0, grid_size)
+                g1 = np.linspace(lo1, hi1, grid_size)
+                X0, X1 = np.meshgrid(g0, g1)
+                new = {"x0": X0.ravel(), "x1": X1.ravel()}
+
+                design_grid = patsy.build_design_matrices([design.design_info], new)[0]
+                design_grid = pd.DataFrame(design_grid, columns=design.columns)
+
+                df_cate = cate.confint(design_grid, level=0.95, joint=True, n_rep_boot=n_boot)
+
+                # Plotly surface
+                import plotly.graph_objects as go
+                eff = np.asarray(df_cate["effect"]).reshape(X0.shape)
+                lo  = np.asarray(df_cate["2.5 %"]).reshape(X0.shape)
+                hi  = np.asarray(df_cate["97.5 %"]).reshape(X0.shape)
+
+                fig = go.Figure(data=[
+                    go.Surface(x=X0, y=X1, z=eff, name="Effect", colorscale="RdBu", reversescale=True, showscale=True),
+                    go.Surface(x=X0, y=X1, z=hi,  name="Upper 95% CI", showscale=False, opacity=0.35, colorscale="RdBu", reversescale=True),
+                    go.Surface(x=X0, y=X1, z=lo,  name="Lower 95% CI", showscale=False, opacity=0.35, colorscale="RdBu", reversescale=True),
+                ])
+                fig.update_traces(contours_z=dict(show=True, usecolormap=True, project_z=True))
+                fig.update_layout(
+                    title="2D CATE surface (scaled axes)",
+                    scene=dict(
+                        xaxis_title=f"{x0_var} (scaled)",
+                        yaxis_title=f"{x1_var} (scaled)",
+                        zaxis_title="Effect"
+                    ),
+                    width=950, margin=dict(r=20, b=10, l=10, t=40),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Download table
+                out = pd.DataFrame({
+                    f"{x0_var}_scaled": X0.ravel(),
+                    f"{x1_var}_scaled": X1.ravel(),
+                    "effect": df_cate["effect"],
+                    "ci_lo": df_cate["2.5 %"],
+                    "ci_hi": df_cate["97.5 %"],
+                })
+                st.download_button(
+                    "⬇️ Download CATE Surface (CSV)",
+                    data=out.to_csv(index=False).encode(),
+                    file_name="cate_2d.csv",
+                    mime="text/csv"
+                )
+
+    st.markdown("---")
+    with st.expander("ℹ️ Notes"):
+        st.markdown("""
+        - CATE is computed on the **same rows** used in your DoubleML fit (no leakage).
+        - We **scale** the chosen variables and **avoid tails** (5–95% range) to reduce extrapolation artifacts.
+        - Increase *df* for more flexible shapes; increase *bootstrap reps* for tighter CIs (slower).
+        """)
 # Footer
 st.markdown("---")
 st.markdown(
