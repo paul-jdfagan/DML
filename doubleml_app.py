@@ -1106,9 +1106,9 @@ elif step == "5️⃣ CATE Explorer":
         with col1:
             st.metric("Total Observations", n_obs)
         with col2:
-            st.metric("Recommended max df", recommended_max_df)
+            st.metric("Theoretical Upper Limit (df)", recommended_max_df)
         with col3:
-            st.metric("Conservative max df", safe_df)
+            st.metric("Safe max (df)", safe_df)
 
         min_df = 3
         max_safe_df = min(5, safe_df)  # don't tempt fate with >5 on ~400 rows
