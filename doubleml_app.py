@@ -1086,7 +1086,13 @@ elif step == "5️⃣ CATE Explorer":
     import matplotlib.pyplot as plt
 
     dim = st.radio("Basis dimension", ["1D", "2D"], horizontal=True)
-
+    # NEW: range policy for the X grid (only used in 1D below)
+    range_policy = st.radio(
+        "X-range policy",
+        ["5–95% quantiles (safer)", "Full observed range"],
+        index=0,
+        help="Quantiles avoid extrapolation in sparse tails; Full uses min–max of observed values.",
+    )
     # -------------------------------------------------
     # 1D: with sample-size diagnostics and df guidance
     # -------------------------------------------------
@@ -1214,9 +1220,14 @@ elif step == "5️⃣ CATE Explorer":
 
                 cate = dml_plr.cate(design)
 
-                # In-support grid on raw scale
-                lo, hi = np.nanquantile(x, [0.05, 0.95])
+                # In-support grid on raw scale (policy-driven)
+                if range_policy.startswith("5–95%"):
+                    lo, hi = np.nanquantile(x, [0.05, 0.95])
+                else:
+                    lo, hi = np.nanmin(x), np.nanmax(x)
+                
                 x_grid = np.linspace(lo, hi, 200)
+                st.caption(f"Plotting range for {x_var}: [{lo:.4g}, {hi:.4g}]")
                 design_grid = patsy.build_design_matrices([design.design_info], {"x": x_grid})[0]
                 design_grid = pd.DataFrame(design_grid, columns=design.columns)
 
