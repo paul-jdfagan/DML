@@ -1102,13 +1102,12 @@ elif step == "5️⃣ CATE Explorer":
         recommended_max_df = max(3, n_obs // 40)  # lenient
         safe_df            = max(3, n_obs // 50)  # conservative
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
-            st.metric("Total Observations", n_obs)
+            st.metric("📊 Total Observations", n_obs)
         with col2:
-            st.metric("Theoretical Upper Limit (df)", recommended_max_df)
-        with col3:
-            st.metric("Safe max (df)", safe_df)
+            st.metric("✅ Safe maximum df", safe_df, 
+                      help="Best practice: stay at or below this df for stable estimates with your sample size.")
 
         min_df = 3
         max_safe_df = min(5, safe_df)  # don't tempt fate with >5 on ~400 rows
